@@ -35,9 +35,9 @@ for _, player in pairs(game.players) do
   }
 end
 for _, entity in pairs(game.surfaces[1].find_entities_filtered({type = "character"})) do
-  characters[#characters + 1] = {
+    characters[#characters + 1] = {
     unit_number = entity.unit_number,
-    player = entity.player and entity.player.name or nil,
+    player = entity.player and entity.player.name or "",
   }
 end
 summary.players = players
@@ -61,17 +61,31 @@ def save_world():
         client.close()
 
 
+def send_lua(client, lua):
+    command = f"/sc {lua}"
+    response = client.send_command(command)
+    if response is None:
+        response = client.send_command(command)
+    if response is None:
+        raise RuntimeError("Lua command returned no response")
+    return response
+
+
 def query():
     client = connect()
     try:
-        command = f"/sc {READ_LUA}"
-        response = client.send_command(command)
-        if response is None:
-            response = client.send_command(command)
+        response = send_lua(client, READ_LUA)
     finally:
         client.close()
-    if response is None:
-        raise RuntimeError("bridge query returned no response")
+    return json.loads(response)
+
+
+def ensure_agent():
+    client = connect()
+    try:
+        response = send_lua(client, 'rcon.print(helpers.table_to_json(remote.call("save_safe_bridge", "ensure_agent_character")))')
+    finally:
+        client.close()
     return json.loads(response)
 
 
@@ -79,6 +93,9 @@ def main():
     if "--save" in sys.argv:
         save_world()
         print("saved")
+        return 0
+    if "--ensure-agent" in sys.argv:
+        print(json.dumps(ensure_agent(), ensure_ascii=False, indent=2))
         return 0
 
     result = query()
