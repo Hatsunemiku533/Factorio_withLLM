@@ -1,0 +1,24 @@
+{
+  "mods": [
+    {
+      "name": "base",
+      "enabled": true
+    },
+    {
+      "name": "elevated-rails",
+      "enabled": false
+    },
+    {
+      "name": "quality",
+      "enabled": false
+    },
+    {
+      "name": "space-age",
+      "enabled": false
+    },
+    {
+      "name": "save-safe-bridge",
+      "enabled": true
+    }
+  ]
+}

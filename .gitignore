@@ -1,4 +1,5 @@
 world/
+world-test/
 Factorio.v2.0.73-P2P/
 server/config/rconpw
 server/config/server-id.json

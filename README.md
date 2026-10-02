@@ -2,7 +2,7 @@
 
 目标：后台留着一个**不会被重置的小工厂**。AI 从最简单的生产任务开始建设；你可以随时用正常游戏窗口连进去巡视，兴致来了就自己摆几台机器。
 
-当前状态：**阶段 2A 已通过（2026-10-03）。** 独立 Python 探针可通过本机 RCON 只读查询正在运行的 `world/shared-world.zip`，查询后石炉、玩家和游戏速度不变，存档也未被改写。尚未进入阶段 2B，也未接入 OpenCode MCP。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+当前状态：**阶段 2B 已通过（2026-10-03）。** 测试存档中的 `save-safe-bridge` 可通过 RCON 做只读查询；保存、重启和 Windows 客户端加入均成功，没有出现 Lua 函数序列化错误。正式 `world/shared-world.zip` 未修改。尚未接入 AI 或 OpenCode MCP。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 现在就能确定的事
 
