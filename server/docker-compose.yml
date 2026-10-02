@@ -1,0 +1,19 @@
+services:
+  factorio:
+    image: factoriotools/factorio:2.0.73
+    container_name: factorio-with-llm
+    restart: "no"
+    ports:
+      - "127.0.0.1:34197:34197/udp"
+      - "127.0.0.1:27015:27015/tcp"
+    volumes:
+      - ../world:/factorio/saves
+      - ./config:/factorio/config
+      - ./mods:/factorio/mods
+    entrypoint: ["/bin/sh", "-c", "sed -i '/--server-whitelist/d; /--use-server-whitelist/d; /--server-banlist/d' /docker-entrypoint.sh && exec /docker-entrypoint.sh"]
+    environment:
+      DLC_SPACE_AGE: "false"
+      LOAD_LATEST_SAVE: "false"
+      SAVE_NAME: "shared-world"
+      GENERATE_NEW_SAVE: "true"
+      UPDATE_MODS_ON_START: "false"
