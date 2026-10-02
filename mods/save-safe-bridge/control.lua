@@ -8,7 +8,7 @@ local function ensure_storage()
     storage.save_safe_bridge = {}
   end
   local data = storage.save_safe_bridge
-  data.schema = 3
+  data.schema = 4
   data.query_count = data.query_count or 0
   if data.agent_unit_number == nil then
     data.agent_unit_number = 0
@@ -21,6 +21,11 @@ local function ensure_storage()
     waypoints = {},
     waypoint_index = 0,
     reason = "",
+    last_x = 0,
+    last_y = 0,
+    stuck_ticks = 0,
+    repaths = 0,
+    direction = nil,
   }
 end
 
@@ -151,25 +156,58 @@ local function distance(a, b)
   return math.sqrt(dx * dx + dy * dy)
 end
 
-local function direction_between(from_position, to_position)
+local DIRECTIONS = {
+  defines.direction.east,
+  defines.direction.southeast,
+  defines.direction.south,
+  defines.direction.southwest,
+  defines.direction.west,
+  defines.direction.northwest,
+  defines.direction.north,
+  defines.direction.northeast,
+}
+
+local function direction_between(from_position, to_position, current_direction)
   local dx = to_position.x - from_position.x
   local dy = to_position.y - from_position.y
-  if math.abs(dx) < 0.05 and math.abs(dy) < 0.05 then
+  if math.abs(dx) < 0.15 and math.abs(dy) < 0.15 then
     return nil
   end
   local angle = math.atan2(dy, dx)
-  local octant = math.floor((angle + math.pi / 8) / (math.pi / 4))
-  local directions = {
-    defines.direction.east,
-    defines.direction.southeast,
-    defines.direction.south,
-    defines.direction.southwest,
-    defines.direction.west,
-    defines.direction.northwest,
-    defines.direction.north,
-    defines.direction.northeast,
-  }
-  return directions[(octant % 8) + 1]
+  local sector = math.pi / 4
+  local hysteresis = current_direction and (sector * 0.35) or (sector * 0.5)
+  local octant = math.floor((angle + hysteresis) / sector)
+  return DIRECTIONS[(octant % 8) + 1]
+end
+
+local function line_is_walkable(agent, target)
+  local start = agent.position
+  local length = distance(start, target)
+  local step = 0.5
+  local count = math.max(1, math.ceil(length / step))
+  for index = 1, count do
+    local t = index / count
+    local point = {
+      x = start.x + (target.x - start.x) * t,
+      y = start.y + (target.y - start.y) * t,
+    }
+    if agent.surface.entity_prototype_collides("character", point, false) then
+      return false
+    end
+  end
+  return true
+end
+
+local function choose_lookahead(agent, movement)
+  local chosen = movement.waypoint_index
+  local limit = math.min(#movement.waypoints, movement.waypoint_index + 8)
+  for index = movement.waypoint_index + 1, limit do
+    if not line_is_walkable(agent, movement.waypoints[index]) then
+      break
+    end
+    chosen = index
+  end
+  return chosen
 end
 
 local function stop_walking(agent)
@@ -189,8 +227,11 @@ local function movement_snapshot()
     target_y = movement.target_y,
     waypoint_index = movement.waypoint_index,
     waypoint_count = #movement.waypoints,
+    lookahead_index = movement.lookahead_index,
     next_x = target and target.x or nil,
     next_y = target and target.y or nil,
+    stuck_ticks = movement.stuck_ticks,
+    repaths = movement.repaths,
     agent_unit_number = agent and agent.unit_number or nil,
     agent_x = agent and agent.position.x or nil,
     agent_y = agent and agent.position.y or nil,
@@ -210,24 +251,21 @@ local function fail_movement(reason)
   end
 end
 
-local function walk_to(request)
-  if type(request) ~= "table" then
-    error("request must be a table")
-  end
-  local agent = stored_agent()
-  if agent == nil then
-    error("AI character does not exist")
-  end
-  local x = finite_number(request.x, "x")
-  local y = finite_number(request.y, "y")
+local function request_agent_path(agent, x, y, repath)
   local movement = storage.save_safe_bridge.movement
-  movement.path_id = movement.path_id + 1
   movement.state = "pathing"
   movement.reason = ""
   movement.target_x = x
   movement.target_y = y
   movement.waypoints = {}
   movement.waypoint_index = 0
+  movement.lookahead_index = 0
+  movement.last_x = agent.position.x
+  movement.last_y = agent.position.y
+  movement.stuck_ticks = 0
+  if not repath then
+    movement.repaths = 0
+  end
   stop_walking(agent)
 
   local prototype = prototypes.entity["character"]
@@ -243,6 +281,19 @@ local function walk_to(request)
     entity_to_ignore = agent,
   })
   movement.path_id = path_id
+end
+
+local function walk_to(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local agent = stored_agent()
+  if agent == nil then
+    error("AI character does not exist")
+  end
+  local x = finite_number(request.x, "x")
+  local y = finite_number(request.y, "y")
+  request_agent_path(agent, x, y, false)
   return movement_snapshot()
 end
 
@@ -270,27 +321,58 @@ local function update_walking()
     return
   end
   local movement = data.movement
+  local goal = {x = movement.target_x, y = movement.target_y}
+  if distance(agent.position, goal) <= 0.8 then
+    movement.state = "arrived"
+    movement.reason = ""
+    stop_walking(agent)
+    return
+  end
+
+  local moved = distance(agent.position, {x = movement.last_x, y = movement.last_y})
+  if moved < 0.01 then
+    movement.stuck_ticks = movement.stuck_ticks + 1
+  else
+    movement.stuck_ticks = 0
+    movement.last_x = agent.position.x
+    movement.last_y = agent.position.y
+  end
+  if movement.stuck_ticks >= 90 then
+    stop_walking(agent)
+    if movement.repaths >= 1 then
+      fail_movement("stuck")
+      return
+    end
+    movement.repaths = 1
+    request_agent_path(agent, movement.target_x, movement.target_y, true)
+    return
+  end
+
   local waypoint = movement.waypoints[movement.waypoint_index]
   if waypoint == nil then
     movement.state = "arrived"
     stop_walking(agent)
     return
   end
-  if distance(agent.position, waypoint) <= 0.6 then
+  local tolerance = movement.waypoint_index == #movement.waypoints and 0.8 or 1.2
+  if distance(agent.position, waypoint) <= tolerance then
     movement.waypoint_index = movement.waypoint_index + 1
-    waypoint = movement.waypoints[movement.waypoint_index]
-    if waypoint == nil or distance(agent.position, {x = movement.target_x, y = movement.target_y}) <= 1 then
-      movement.state = "arrived"
-      stop_walking(agent)
-      return
-    end
   end
-  local direction = direction_between(agent.position, waypoint)
+  if movement.waypoint_index > #movement.waypoints then
+    movement.state = "arrived"
+    stop_walking(agent)
+    return
+  end
+
+  movement.lookahead_index = choose_lookahead(agent, movement)
+  local aim = movement.waypoints[movement.lookahead_index]
+  local direction = direction_between(agent.position, aim, movement.direction)
   if direction == nil then
     movement.state = "arrived"
     stop_walking(agent)
     return
   end
+  movement.direction = direction
   agent.walking_state = {walking = true, direction = direction}
 end
 
@@ -340,22 +422,16 @@ local function place_stone_furnace(request)
   local x = finite_number(request.x, "x")
   local y = finite_number(request.y, "y")
   local target = {x = x, y = y}
-  local reach = agent.reach_distance + agent.build_distance
-  if distance(agent.position, target) > reach then
-    error("target is outside the AI character build reach")
+  if not agent.can_place_entity({name = "stone-furnace", position = target}) then
+    if distance(agent.position, target) > agent.build_distance then
+      error("target is outside the AI character build distance")
+    end
+    error("target is blocked")
   end
   if agent.get_item_count("stone-furnace") < 1 then
     error("AI inventory has no stone furnace")
   end
   local surface = agent.surface
-  if not surface.can_place_entity({
-    name = "stone-furnace",
-    position = target,
-    force = agent.force,
-    build_check_type = defines.build_check_type.manual,
-  }) then
-    error("target is blocked")
-  end
   local created = surface.create_entity({
     name = "stone-furnace",
     position = target,
