@@ -89,6 +89,20 @@ def ensure_agent():
     return json.loads(response)
 
 
+def call_remote(function_name, request=None):
+    client = connect()
+    try:
+        send_lua(client, 'rcon.print("ready")')
+        arguments = ""
+        if request is not None:
+            arguments = ", " + json.dumps(request, ensure_ascii=True)
+        lua = f'remote.call("save_safe_bridge", "{function_name}"{arguments})'
+        response = send_lua(client, f"rcon.print(helpers.table_to_json({lua}))")
+    finally:
+        client.close()
+    return json.loads(response)
+
+
 def main():
     if "--save" in sys.argv:
         save_world()
