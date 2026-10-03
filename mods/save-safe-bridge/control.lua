@@ -1,6 +1,6 @@
 local INTERFACE_NAME = "save_safe_bridge"
 local MAX_RADIUS = 32
-local SCHEMA = 7
+local SCHEMA = 8
 
 local AGENT_ID = "mira"
 local AGENT_DISPLAY_NAME = "Mira"
@@ -34,22 +34,48 @@ local end_run
 local action_snapshot
 local stop_all_actions
 
+local HISTORICAL_REPAIRS = {
+  [27] = {name = "stone-furnace", x = -70, y = -8},
+  [28] = {name = "stone-furnace", x = -68, y = -7},
+  [29] = {name = "burner-mining-drill", x = -73, y = -9},
+  [30] = {name = "stone-furnace", x = -73, y = -13},
+  [31] = {name = "stone-furnace", x = -71, y = -10},
+}
+
+local function record_owner(data, entity)
+  data.owned_machines[entity.unit_number] = {
+    agent_id = AGENT_ID,
+    unit_number = entity.unit_number,
+    entity_name = entity.name,
+    surface = entity.surface.name,
+    x = entity.position.x,
+    y = entity.position.y,
+    placed_tick = game.tick,
+  }
+end
+
 local function migrate_owned_machines(data, previous_schema)
   data.owned_machines = data.owned_machines or {}
-  -- Recover the one exact historical furnace if the first schema-7 load missed it.
-  if data.historical_furnace_claimed ~= true and (previous_schema == nil or previous_schema <= SCHEMA) then
-    local furnace = nil
+  local durable = {}
+  for unit_number, record in pairs(data.owned_machines) do
+    if type(record) == "table" and record.agent_id ~= nil then
+      durable[unit_number] = record
+    end
+  end
+  data.owned_machines = durable
+  -- One-time repair for records lost by the schema-7 boolean table serialization bug.
+  if data.historical_provenance_repaired ~= true and previous_schema ~= nil and previous_schema <= 7 then
     local surface = game.surfaces["nauvis"]
     if surface ~= nil then
-      local found = surface.find_entities_filtered({name = "stone-furnace", position = {x = -70, y = -8}, radius = 0.1, force = "player", limit = 1})
-      local furnace = found[1]
-      if furnace ~= nil and furnace.valid and furnace.force.name == "player" then
-        data.owned_machines[furnace.unit_number] = true
+      local found = surface.find_entities_filtered({type = {"furnace", "mining-drill"}, force = "player"})
+      for _, entity in pairs(found) do
+        local expected = HISTORICAL_REPAIRS[entity.unit_number]
+        if expected ~= nil and entity.valid and entity.name == expected.name and entity.position.x == expected.x and entity.position.y == expected.y then
+          record_owner(data, entity)
+        end
       end
     end
-    if furnace ~= nil then
-      data.historical_furnace_claimed = true
-    end
+    data.historical_provenance_repaired = true
   end
 end
 
@@ -145,7 +171,7 @@ local function claim_units(request)
       end
     end
     if entity ~= nil and entity.valid and (entity.name == "stone-furnace" or entity.name == "burner-mining-drill") and entity.force.name == "player" then
-      storage.save_safe_bridge.owned_machines[entity.unit_number] = true
+      record_owner(storage.save_safe_bridge, entity)
       claimed[#claimed + 1] = entity.unit_number
     end
   end
@@ -820,7 +846,8 @@ local function direction_name(value)
 end
 
 local function machine_owned(entity)
-  return storage.save_safe_bridge.owned_machines[entity.unit_number] == true
+  local record = storage.save_safe_bridge.owned_machines[entity.unit_number]
+  return type(record) == "table" and record.agent_id == AGENT_ID and record.entity_name == entity.name and record.surface == entity.surface.name
 end
 
 local function drop_target_ok(entity)
@@ -892,7 +919,7 @@ local function place_entity_core(request, entity_name)
     created.destroy()
     error("failed to deduct the item from AI inventory")
   end
-  storage.save_safe_bridge.owned_machines[created.unit_number] = true
+  record_owner(storage.save_safe_bridge, created)
   return {
     placed = true,
     item = entity_name,
@@ -1201,8 +1228,8 @@ local function production_snapshot()
   local drills = {}
   local total_resource_amount = 0
   local stale = {}
-  for unit_number, owned in pairs(data.owned_machines) do
-    if owned then
+  for unit_number, record in pairs(data.owned_machines) do
+    if type(record) == "table" and record.agent_id == AGENT_ID then
       local entity = nil
       if game.get_entity_by_unit_number ~= nil then
         entity = game.get_entity_by_unit_number(unit_number)
@@ -1228,13 +1255,8 @@ local function production_snapshot()
             resources = resources,
           }
         end
-      else
-        stale[#stale + 1] = unit_number
       end
     end
-  end
-  for _, unit_number in ipairs(stale) do
-    data.owned_machines[unit_number] = nil
   end
   return {
     tick = game.tick,
@@ -1584,6 +1606,15 @@ local function status()
   }
 end
 
+local function ownership_debug()
+  ensure_storage()
+  local keys = {}
+  for unit_number, record in pairs(storage.save_safe_bridge.owned_machines) do
+    keys[#keys + 1] = {unit_number = unit_number, agent_id = type(record) == "table" and record.agent_id or ""}
+  end
+  return {schema = storage.save_safe_bridge.schema, count = #keys, records = keys}
+end
+
 script.on_init(ensure_storage)
 script.on_configuration_changed(ensure_storage)
 script.on_event(defines.events.on_tick, function()
@@ -1604,6 +1635,7 @@ script.on_event(defines.events.on_script_path_request_finished, on_path_finished
 remote.add_interface(INTERFACE_NAME, {
   get_entities = get_entities,
   status = status,
+  ownership_debug = ownership_debug,
   ensure_agent_character = ensure_agent_character,
   agent_status = agent_status,
   walk_to = walk_to,

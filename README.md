@@ -2,11 +2,11 @@
 
 目标：后台留着一个**不会被重置的小工厂**。AI 从最简单的生产任务开始建设；你可以随时用正常游戏窗口连进去巡视，兴致来了就自己摆几台机器。
 
-当前状态：**阶段 3C 已通过；阶段 4AB 未通过（2026-10-03）。** Mira 曾自主放置燃油采矿机和石炉，炉 31 产出 33 块 iron plate，但测试服重启后机器所有权全部丢失。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+当前状态：**阶段 3C 已通过；阶段 4AB 未通过；4AB-R Gate A 已通过（2026-10-03）。** 所有权已改为可持久化的 `agent_id` 记录，历史机器 27–31 已精确恢复为 Mira 所有。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 当前实现
 
-当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.7.0`，数据 schema 为 `7`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
+当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.8.0`，数据 schema 为 `8`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
 
 **不使用 FLE 运行时、官方 MCP、`FactorioInstance` 或 FLE 建造接口。** FLE 只作为早期调查参考，它的默认初始化与退出 reset 会破坏共同世界。`实现调查.md` 第 1–15 节是原始方案，第 16–24 节是逐步实测；旧阶段的文件名和能力描述不能当作当前操作说明。
 
@@ -50,7 +50,7 @@ MCP 默认不写调试日志。如需定位协议问题，只在临时调试时�
 | RCON | `127.0.0.1:27015` | `127.0.0.1:27115` |
 | 挂载存档目录 | `world/` | `world-test/` |
 | 启动命名存档 | `shared-world.zip` | `bridge-test.zip` |
-| bridge mod | 未启用 | `save-safe-bridge 0.6.0` |
+| bridge mod | 未启用 | `save-safe-bridge 0.8.0` |
 
 2026-10-03 整理时两台容器均在运行。正式服也会写自己的自动保存，因此“正式命名存档未修改”不表示 `world/` 整个目录静止。两个 compose 都设置 `LOAD_LATEST_SAVE=false`，不会自动选择最新 autosave；重要任务后应明确保存命名存档，不能假定重启会恢复最近的自动保存。
 
@@ -60,13 +60,24 @@ RCON 密码在各自的 `config/rconpw`，服务器身份在 `config/server-id.j
 
 ## 修改与部署
 
-修改 mod 时只改 `mods/save-safe-bridge/`。测试服运行副本是 `server-test/mods/save-safe-bridge/`；客户端实际使用 `%APPDATA%\Factorio\mods\save-safe-bridge_0.6.0.zip`，**不在便携游戏安装目录里**。测试服不再同时保留相同 mod 的文件夹和 zip，避免改错副本。
+修改 mod 时只改 `mods/save-safe-bridge/`。测试服运行副本是 `server-test/mods/save-safe-bridge/`；客户端实际使用 `%APPDATA%\Factorio\mods\save-safe-bridge_<版本>.zip`，**不在便携游戏安装目录里**。测试服不再同时保留相同 mod 的文件夹和 zip，避免改错副本。
+
+### 常见故障：提示 `mod-save-safe-bridge` 脚本与服务器有差异
+
+这不是存档损坏。Factorio 会逐字节比较客户端 zip 和测试服副本里的 `control.lua`；只要服务器已加载新脚本而客户端仍是旧 zip，就会拒绝加入。
+
+每次改完 mod 后按这个顺序处理：
+
+1. 先等 Factorio 完全退出。游戏运行时 zip 会被锁定，此时不能替换。
+2. 用源码重新生成版本匹配的客户端 zip，并确认测试服副本也是同一份源码。
+3. 再启动客户端，连接 `127.0.0.1:34297`。
+4. 如果仍然报差异，不要反复重连；先比较三处 `control.lua` 的 SHA256：源码、`server-test/mods/save-safe-bridge/`、客户端 zip 内文件。三者必须完全一致。
+
+只改 Python、README 或 Mira 配置不会导致这个提示，也不需要重打客户端 zip。
 
 部署必须同步源码、测试服副本与客户端包，保持版本及文件内容一致。客户端 zip 内部必须以 `save-safe-bridge/` 为前缀，包含 `save-safe-bridge/info.json` 和 `save-safe-bridge/control.lua`，不能直接把两个文件放在 zip 根部，也不能多套一层 `modpack/`。
 
-`info.json` 的 `description` 仍沿用初版的“只读查询”说明，不代表当前能力；实际接口以 `control.lua` 和 MCP 工具表为准。本轮不重写正在使用的 mod 包，这个元数据说明留到下次同步部署时一起更新。
-
-更新客户端包前等 Factorio 完全退出；测试服重启会踢人，先通知并等用户确认。当前没有自动部署脚本，也不默认部署到正式服。只改 Python MCP 或 Mira 配置无需重启游戏服务器，但需要退出并重新启动相关 OpenCode 进程才能加载新版本。
+客户端 zip 内必须是 `save-safe-bridge/info.json` 与 `save-safe-bridge/control.lua`。更新前等 Factorio 完全退出；测试服重启会踢人，先通知并等用户确认。当前没有自动部署脚本，也不默认部署到正式服。只改 Python MCP 或 Mira 配置无需重启游戏服务器，但需要退出并重新启动相关 OpenCode 进程才能加载新版本。
 
 `world/`、`world-test/`、客户端、凭据、日志、Python 缓存和测试服 mod 部署副本都被 Git 忽略。**Git 历史只保护已提交的源码与说明，不保护世界进度。** 备份原生存档时需单独保留 `.zip`，不要拿 AI 记忆或 FLE 快照代替。
 
