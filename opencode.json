@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "factorio-stella": {
+      "type": "local",
+      "command": [
+        "F:\\vscode\\minicode\\python.exe",
+        "adapter\\stella_mcp.py"
+      ],
+      "enabled": true,
+      "timeout": 15000
+    }
+  }
+}
