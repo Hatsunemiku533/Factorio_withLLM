@@ -1,11 +1,16 @@
 """Restricted local MCP bridge for the Mira agent.
 
-The model can observe, walk, mine, craft, place and use stone furnaces, and
-update bounded memory files. Raw RCON, free items, resets, and arbitrary file
-paths are not exposed.
+The model can observe, walk, mine, craft, place and rotate allowed machines,
+inspect items and entities, close bounded episodes, and update bounded memory
+files. Raw RCON, free items, resets, and arbitrary file paths are not exposed.
+
+Mutating bridge calls carry the run token from MIRA_RUN_TOKEN and are rejected
+once MIRA_RUN_DEADLINE (absolute epoch seconds) has passed. Both values come
+only from the runner environment and are never accepted from the model.
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -18,6 +23,23 @@ ROOT = Path(__file__).resolve().parents[1]
 MEMORY = ROOT / "memory"
 LOG_DIR = MEMORY / "log"
 PROTOCOL_VERSION = "2024-11-05"
+SERVER_VERSION = "0.2.0"
+
+PLACEABLE_ITEMS = ("stone-furnace", "burner-mining-drill")
+MACHINE_NAMES = ("stone-furnace", "burner-mining-drill")
+DIRECTIONS = ("north", "east", "south", "west")
+EPISODE_STATUSES = ("continue", "blocker")
+MUTATING_FUNCTIONS = {
+    "walk_to",
+    "place_item",
+    "mine_resource",
+    "craft_item",
+    "insert_into_entity",
+    "take_from_entity",
+    "rotate_entity",
+}
+OBSERVE_RADIUS = 32
+OBSERVE_INSPECT_BUDGET = 8
 
 
 def text_result(payload, is_error=False):
@@ -45,23 +67,99 @@ def read_bounded(path, limit):
     return text[:limit]
 
 
+def finite_float(value, name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a finite number")
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number")
+    return number
+
+
+def run_deadline_expired():
+    raw = os.environ.get("MIRA_RUN_DEADLINE")
+    if not raw:
+        return False
+    try:
+        deadline = float(raw)
+    except ValueError:
+        raise RuntimeError("MIRA_RUN_DEADLINE must be absolute epoch seconds")
+    return time.time() >= deadline
+
+
+def call_remote(function_name, request=None):
+    """Call the bridge, adding the runner token and deadline gate for mutations."""
+    payload = dict(request) if request else {}
+    if function_name in MUTATING_FUNCTIONS:
+        if run_deadline_expired():
+            raise RuntimeError("run deadline exceeded")
+        token = os.environ.get("MIRA_RUN_TOKEN")
+        if not token:
+            raise RuntimeError("MIRA_RUN_TOKEN is not set; only the runner may mutate")
+        payload["run_token"] = token
+    return bridge_probe.call_remote(function_name, payload if payload else None)
+
+
+def compact_machine(detail):
+    compact = {
+        "name": detail.get("name"),
+        "unit_number": detail.get("unit_number"),
+        "status": detail.get("status"),
+        "owned": detail.get("owned"),
+        "direction": detail.get("direction"),
+        "is_crafting": detail.get("is_crafting"),
+    }
+    if detail.get("name") == "stone-furnace":
+        compact["products_finished"] = detail.get("products_finished")
+    else:
+        compact["mining_target"] = detail.get("mining_target")
+        compact["drop_position"] = detail.get("drop_position")
+        compact["drop_target"] = detail.get("drop_target")
+    return compact
+
+
 def observe():
     summary = bridge_probe.query()
-    agent = bridge_probe.call_remote("agent_status")
-    movement = bridge_probe.call_remote("movement_status")
+    agent = call_remote("agent_status")
+    movement = call_remote("movement_status")
     entities = []
-    for entity in summary["entities"]:
-        if entity["name"] in ("stone-furnace", "character", "crash-site-spaceship"):
-            entities.append(entity)
+    inspected = 0
+    if agent.get("x") is not None and agent.get("y") is not None:
+        nearby = call_remote("get_entities", {
+            "surface": summary["surface"],
+            "force": "player",
+            "x": agent["x"],
+            "y": agent["y"],
+            "radius": OBSERVE_RADIUS,
+        })
+    else:
+        nearby = {"entities": []}
+    for entity in nearby.get("entities", []):
+        name = entity.get("name")
+        if name not in MACHINE_NAMES and name != "character":
+            continue
+        entry = dict(entity)
+        unit_number = entity.get("unit_number")
+        if name in MACHINE_NAMES and unit_number is not None and inspected < OBSERVE_INSPECT_BUDGET:
+            try:
+                detail = call_remote("inspect_entity", {"unit_number": unit_number})
+            except Exception as exc:
+                entry["inspect_error"] = str(exc)
+            else:
+                entry["owned"] = detail.get("owned")
+                entry["machine"] = compact_machine(detail)
+            inspected += 1
+        entities.append(entry)
     return {
         "surface": summary["surface"],
         "speed": summary["speed"],
         "tick": summary["tick"],
         "agent": agent,
         "movement": movement,
-        "inventory": bridge_probe.call_remote("inventory"),
-        "resources": bridge_probe.call_remote("scan_resources", {"radius": 96})["resources"],
-        "action": bridge_probe.call_remote("action_status"),
+        "inventory": call_remote("inventory"),
+        "resources": call_remote("scan_resources", {"radius": 96})["resources"],
+        "action": call_remote("action_status"),
         "entities": entities,
         "players": summary["players"],
         "characters": summary["characters"],
@@ -69,42 +167,30 @@ def observe():
     }
 
 
-def lua_result(function_name, request):
-    client = bridge_probe.connect()
-    try:
-        bridge_probe.send_lua(client, 'rcon.print("ready")')
-        payload = "{x = " + format(float(request["x"]), ".6f") + ", y = " + format(float(request["y"]), ".6f") + "}"
-        lua = (
-            "local ok, result = pcall(remote.call, "
-            f'"save_safe_bridge", "{function_name}", {payload}); '
-            "if ok then rcon.print(helpers.table_to_json(result)) else rcon.print(result) end"
-        )
-        response = bridge_probe.send_lua(client, lua)
-    finally:
-        client.close()
-    if response.startswith("Error"):
-        raise RuntimeError(response.splitlines()[0])
-    return json.loads(response)
-
-
 def move_to(arguments):
-    x = float(arguments["x"])
-    y = float(arguments["y"])
+    x = finite_float(arguments["x"], "x")
+    y = finite_float(arguments["y"], "y")
     if abs(x) > 128 or abs(y) > 128:
         raise ValueError("target is outside the phase 3A nearby area")
-    start = bridge_probe.call_remote("agent_status")
-    lua_result("walk_to", {"x": x, "y": y})
+    start = call_remote("agent_status")
+    call_remote("walk_to", {"x": x, "y": y})
     started = time.time()
-    deadline = started + 35
+    timeout = 35
     final = None
-    while time.time() < deadline:
-        final = bridge_probe.call_remote("movement_status")
+    while time.time() < started + timeout:
+        if run_deadline_expired():
+            call_remote("stop_agent")
+            final = call_remote("movement_status")
+            final["state"] = "failed"
+            final["reason"] = "run deadline exceeded"
+            break
+        final = call_remote("movement_status")
         if final["state"] in ("arrived", "failed", "idle"):
             break
         time.sleep(0.75)
     else:
-        bridge_probe.call_remote("stop_agent")
-        final = bridge_probe.call_remote("movement_status")
+        call_remote("stop_agent")
+        final = call_remote("movement_status")
         final["state"] = "failed"
         final["reason"] = "timeout"
     return {
@@ -116,77 +202,112 @@ def move_to(arguments):
 
 
 def stop():
-    return bridge_probe.call_remote("stop_agent")
+    return call_remote("stop_agent")
 
 
 def inventory():
-    return bridge_probe.call_remote("inventory")
+    return call_remote("inventory")
 
 
 def scan_resources(arguments):
-    radius = min(96, max(1, float(arguments.get("radius", 96))))
-    return bridge_probe.call_remote("scan_resources", {"radius": radius})
+    radius = min(96, max(1, finite_float(arguments.get("radius", 96), "radius")))
+    return call_remote("scan_resources", {"radius": radius})
 
 
-def wait_action(timeout=25):
+def wait_action(timeout):
     started = time.time()
     final = None
     while time.time() < started + timeout:
-        final = bridge_probe.call_remote("action_status")
+        if run_deadline_expired():
+            return final, True
+        final = call_remote("action_status")
         if final["kind"] not in ("mining", "crafting"):
-            return final
+            return final, False
         time.sleep(0.5)
-    return final
+    return final, True
 
 
 def mine_resource(arguments):
     count = int(arguments["count"])
     if count < 1 or count > 10:
         raise ValueError("count must be between 1 and 10")
-    started = bridge_probe.call_remote("mine_resource", {
-        "resource": str(arguments["resource"]),
-        "x": float(arguments["x"]),
-        "y": float(arguments["y"]),
+    resource = str(arguments["resource"])
+    x = finite_float(arguments["x"], "x")
+    y = finite_float(arguments["y"], "y")
+    started = call_remote("mine_resource", {
+        "resource": resource,
+        "x": x,
+        "y": y,
         "count": count,
     })
-    final = wait_action(max(8, count * 4))
+    final, timed_out = wait_action(max(8, count * 4))
+    if timed_out:
+        call_remote("stop_agent")
+        final = call_remote("action_status")
     return {
         "started": started,
+        "timed_out": timed_out,
         "final": final,
-        "inventory": bridge_probe.call_remote("inventory"),
+        "inventory": call_remote("inventory"),
     }
 
 
 def inspect_recipe(arguments):
-    return bridge_probe.call_remote("inspect_recipe", {"item": str(arguments["item"])})
+    return call_remote("inspect_recipe", {"item": str(arguments["item"])})
 
 
 def craft(arguments):
     count = int(arguments["count"])
     if count < 1 or count > 5:
         raise ValueError("count must be between 1 and 5")
-    started = bridge_probe.call_remote("craft_item", {"item": str(arguments["item"]), "count": count})
-    recipe = bridge_probe.call_remote("inspect_recipe", {"item": str(arguments["item"])})
-    time.sleep(max(0.5, float(recipe.get("energy") or 0.5) * count + 0.3))
-    return {"started": started, "inventory": bridge_probe.call_remote("inventory")}
+    item = str(arguments["item"])
+    started = call_remote("craft_item", {"item": item, "count": count})
+    final, timed_out = wait_action(60)
+    return {
+        "started": started,
+        "timed_out": timed_out,
+        "action": final,
+        "inventory": call_remote("inventory"),
+    }
 
 
 def locate():
-    return bridge_probe.call_remote("locate")
+    return call_remote("locate")
 
 
 def inspect_smelting_recipe(arguments):
-    return bridge_probe.call_remote("inspect_smelting_recipe", {"item": str(arguments["item"])})
+    return call_remote("inspect_smelting_recipe", {"item": str(arguments["item"])})
+
+
+def inspect_item(arguments):
+    return call_remote("inspect_item", {"item": str(arguments["item"])})
 
 
 def place_item(arguments):
     item = str(arguments["item"])
-    if item != "stone-furnace":
-        raise ValueError("only stone-furnace placement is allowed")
-    return bridge_probe.call_remote("place_item", {
+    if item not in PLACEABLE_ITEMS:
+        raise ValueError("only stone-furnace and burner-mining-drill placement is allowed")
+    x = finite_float(arguments["x"], "x")
+    y = finite_float(arguments["y"], "y")
+    direction = str(arguments.get("direction", "north"))
+    if direction not in DIRECTIONS:
+        raise ValueError("direction must be north, east, south, or west")
+    return call_remote("place_item", {
         "item": item,
-        "x": float(arguments["x"]),
-        "y": float(arguments["y"]),
+        "x": x,
+        "y": y,
+        "direction": direction,
+    })
+
+
+def rotate_entity(arguments):
+    unit_number = int(arguments["unit_number"])
+    direction = str(arguments["direction"])
+    if direction not in DIRECTIONS:
+        raise ValueError("direction must be north, east, south, or west")
+    return call_remote("rotate_entity", {
+        "unit_number": unit_number,
+        "direction": direction,
     })
 
 
@@ -195,9 +316,9 @@ def inspect_entity(arguments):
     if "unit_number" in arguments:
         request["unit_number"] = int(arguments["unit_number"])
     else:
-        request["x"] = float(arguments["x"])
-        request["y"] = float(arguments["y"])
-    return bridge_probe.call_remote("inspect_entity", request)
+        request["x"] = finite_float(arguments["x"], "x")
+        request["y"] = finite_float(arguments["y"], "y")
+    return call_remote("inspect_entity", request)
 
 
 def insert_into_entity(arguments):
@@ -207,7 +328,7 @@ def insert_into_entity(arguments):
     kind = str(arguments["inventory_kind"])
     if kind not in ("fuel", "input"):
         raise ValueError("inventory_kind must be fuel or input")
-    return bridge_probe.call_remote("insert_into_entity", {
+    return call_remote("insert_into_entity", {
         "unit_number": int(arguments["unit_number"]),
         "item": str(arguments["item"]),
         "count": count,
@@ -222,7 +343,7 @@ def take_from_entity(arguments):
     kind = str(arguments.get("inventory_kind", "output"))
     if kind not in ("fuel", "input", "output"):
         raise ValueError("inventory_kind must be fuel, input, or output")
-    return bridge_probe.call_remote("take_from_entity", {
+    return call_remote("take_from_entity", {
         "unit_number": int(arguments["unit_number"]),
         "item": str(arguments["item"]),
         "count": count,
@@ -234,11 +355,11 @@ def wait_for_entity(arguments):
     unit_number = int(arguments["unit_number"])
     item = str(arguments.get("item", "iron-plate"))
     needed = int(arguments.get("count", 1))
-    timeout = min(60, max(5, float(arguments.get("timeout", 40))))
+    timeout = min(60, max(5, finite_float(arguments.get("timeout", 40), "timeout")))
     started = time.time()
     last = None
     while time.time() - started < timeout:
-        last = bridge_probe.call_remote("inspect_entity", {"unit_number": unit_number})
+        last = call_remote("inspect_entity", {"unit_number": unit_number})
         if (last.get("output") or {}).get(item, 0) >= needed:
             return {"ready": True, "elapsed_seconds": round(time.time() - started, 2), "entity": last}
         time.sleep(1.5)
@@ -268,6 +389,33 @@ def propose_long_term(arguments):
     return {"stored_proposal": "memory/long_term_proposals.md", "merged": False}
 
 
+def episode_finish(arguments):
+    status = str(arguments["status"])
+    if status not in EPISODE_STATUSES:
+        raise ValueError("status must be continue or blocker")
+    summary = bounded_text(arguments["summary"], 2000, "summary").strip()
+    current_goal = bounded_text(arguments["current_goal"], 500, "current_goal").strip()
+    current_path = MEMORY / "current.md"
+    current_path.write_text(
+        "# Current\n\n"
+        f"- episode_status: {status}\n"
+        f"- current_goal: {current_goal}\n\n"
+        "## Summary\n\n"
+        f"{summary}\n",
+        encoding="utf-8",
+    )
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    entry = (f"episode {status}: {summary} | current_goal: {current_goal}")[:2000]
+    log_path = LOG_DIR / (datetime.now().strftime("%Y-%m-%d") + ".md")
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n## {datetime.now().isoformat(timespec='seconds')}\n\n{entry}\n")
+    return {
+        "episode_status": status,
+        "summary": summary,
+        "current_goal": current_goal,
+    }
+
+
 TOOLS = {
     "observe": {
         "description": "Read a compact live view of the test world. Live data overrides memory.",
@@ -285,7 +433,7 @@ TOOLS = {
         "handler": move_to,
     },
     "stop": {
-        "description": "Stop Mira's current walking action.",
+        "description": "Stop all of Mira's current movement, mining, and crafting actions.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "handler": lambda arguments: stop(),
     },
@@ -329,18 +477,41 @@ TOOLS = {
         "inputSchema": {"type": "object", "properties": {"item": {"type": "string"}}, "required": ["item"], "additionalProperties": False},
         "handler": inspect_smelting_recipe,
     },
+    "inspect_item": {
+        "description": "Read factual placement prototype data for an item, such as collision box, footprint, and machine fields when present.",
+        "inputSchema": {"type": "object", "properties": {"item": {"type": "string"}}, "required": ["item"], "additionalProperties": False},
+        "handler": inspect_item,
+    },
     "place_item": {
-        "description": "Place one allowed item from Mira's inventory at nearby coordinates. Currently only stone-furnace.",
+        "description": "Place one allowed item from Mira's inventory at nearby coordinates, optionally facing one cardinal direction.",
         "inputSchema": {
             "type": "object",
-            "properties": {"item": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}},
+            "properties": {
+                "item": {"type": "string"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "direction": {"type": "string", "enum": ["north", "east", "south", "west"]},
+            },
             "required": ["item", "x", "y"],
             "additionalProperties": False,
         },
         "handler": place_item,
     },
+    "rotate_entity": {
+        "description": "Rotate a reachable machine to one of the four cardinal directions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "unit_number": {"type": "integer"},
+                "direction": {"type": "string", "enum": ["north", "east", "south", "west"]},
+            },
+            "required": ["unit_number", "direction"],
+            "additionalProperties": False,
+        },
+        "handler": rotate_entity,
+    },
     "inspect_entity": {
-        "description": "Inspect a nearby stone furnace: status, fuel, input, and output.",
+        "description": "Inspect a nearby machine (stone furnace or burner mining drill): status, ownership, direction, inventories, and machine-specific fields.",
         "inputSchema": {
             "type": "object",
             "properties": {"unit_number": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}},
@@ -379,7 +550,7 @@ TOOLS = {
         "handler": take_from_entity,
     },
     "wait_for_entity": {
-        "description": "Wait until a furnace output contains an item, or until timeout. Default item is iron-plate.",
+        "description": "Wait until a machine output contains an item, or until timeout.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -431,6 +602,20 @@ TOOLS = {
         },
         "handler": propose_long_term,
     },
+    "episode_finish": {
+        "description": "Close the current episode with a status, summary, and goal, and store it in memory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["continue", "blocker"]},
+                "summary": {"type": "string"},
+                "current_goal": {"type": "string"},
+            },
+            "required": ["status", "summary", "current_goal"],
+            "additionalProperties": False,
+        },
+        "handler": episode_finish,
+    },
 }
 
 
@@ -453,7 +638,7 @@ def handle(message):
         return {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "factorio-mira", "version": "0.1.0"},
+            "serverInfo": {"name": "factorio-mira", "version": SERVER_VERSION},
         }
     if method == "tools/list":
         return {

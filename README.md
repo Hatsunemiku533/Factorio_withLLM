@@ -2,11 +2,11 @@
 
 目标：后台留着一个**不会被重置的小工厂**。AI 从最简单的生产任务开始建设；你可以随时用正常游戏窗口连进去巡视，兴致来了就自己摆几台机器。
 
-当前状态：**阶段 3C 已通过（2026-10-03）。** Mira 头顶有名字，地图上可以找到她。她用火山 `coding_plan/deepseek-v4.1-flash` 自己采矿、放下石炉并炼出铁板，5 块 iron plate 在她自己的 inventory 里。正式 `world/shared-world.zip` 未修改。还没有自动扩建。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+当前状态：**阶段 3C 已通过；阶段 4AB 未通过（2026-10-03）。** Mira 曾自主放置燃油采矿机和石炉，炉 31 产出 33 块 iron plate，但测试服重启后机器所有权全部丢失。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 当前实现
 
-当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.6.0`，数据 schema 为 `6`。
+当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.7.0`，数据 schema 为 `7`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
 
 **不使用 FLE 运行时、官方 MCP、`FactorioInstance` 或 FLE 建造接口。** FLE 只作为早期调查参考，它的默认初始化与退出 reset 会破坏共同世界。`实现调查.md` 第 1–15 节是原始方案，第 16–24 节是逐步实测；旧阶段的文件名和能力描述不能当作当前操作说明。
 

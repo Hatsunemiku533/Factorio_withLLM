@@ -1,9 +1,9 @@
 {
   "name": "save-safe-bridge",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "title": "Save-safe Bridge",
   "author": "Factorio_withLLM",
   "factorio_version": "2.0",
   "dependencies": ["base >= 2.0"],
-  "description": "Exposes one read-only entity query through a remote interface. Functions stay in mod globals and storage contains data only."
+  "description": "Restricted persistent bridge for one AI character. Functions stay in mod globals and storage contains data only."
 }

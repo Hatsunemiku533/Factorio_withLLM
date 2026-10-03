@@ -1,5 +1,6 @@
 local INTERFACE_NAME = "save_safe_bridge"
 local MAX_RADIUS = 32
+local SCHEMA = 7
 
 local AGENT_ID = "mira"
 local AGENT_DISPLAY_NAME = "Mira"
@@ -8,8 +9,13 @@ local NAME_OFFSET = {0, -2.6}
 local NAME_SCALE = 3.2
 local LOCATOR_INTERVAL = 120
 local LOCATOR_MOVE_THRESHOLD = 2
+local MACHINE_NAMES = {
+  ["stone-furnace"] = true,
+  ["burner-mining-drill"] = true,
+}
 local PLACEABLE_ITEMS = {
   ["stone-furnace"] = "stone-furnace",
+  ["burner-mining-drill"] = "burner-mining-drill",
 }
 local INSERT_ITEMS = {
   fuel = {coal = true, wood = true},
@@ -21,12 +27,38 @@ local TAKE_ITEMS = {
   output = {["iron-plate"] = true, ["copper-plate"] = true, ["stone-brick"] = true},
 }
 
+-- Forward declarations resolve definition order between later sections.
+local validate_run
+local begin_run
+local end_run
+local action_snapshot
+local stop_all_actions
+
+local function migrate_owned_machines(data, previous_schema)
+  data.owned_machines = data.owned_machines or {}
+  -- Recover the one exact historical furnace if the first schema-7 load missed it.
+  if data.historical_furnace_claimed ~= true and (previous_schema == nil or previous_schema <= SCHEMA) then
+    local furnace = nil
+    local surface = game.surfaces["nauvis"]
+    if surface ~= nil then
+      local found = surface.find_entities_filtered({name = "stone-furnace", position = {x = -70, y = -8}, radius = 0.1, force = "player", limit = 1})
+      local furnace = found[1]
+      if furnace ~= nil and furnace.valid and furnace.force.name == "player" then
+        data.owned_machines[furnace.unit_number] = true
+      end
+    end
+    if furnace ~= nil then
+      data.historical_furnace_claimed = true
+    end
+  end
+end
+
 local function ensure_storage()
   if storage.save_safe_bridge == nil then
     storage.save_safe_bridge = {}
   end
   local data = storage.save_safe_bridge
-  data.schema = 6
+  local previous_schema = data.schema
   data.query_count = data.query_count or 0
   data.agent_id = data.agent_id or AGENT_ID
   data.display_name = AGENT_DISPLAY_NAME
@@ -67,6 +99,57 @@ local function ensure_storage()
     next_tick = 0,
   }
   data.action.next_tick = data.action.next_tick or 0
+  data.owned_machines = data.owned_machines or {}
+  if previous_schema == nil or previous_schema < SCHEMA then
+    migrate_owned_machines(data, previous_schema)
+  end
+  data.run = data.run or {token = "", active = false, deadline = 0}
+  data.schema = SCHEMA
+end
+
+local function claim_historical_furnace()
+  ensure_storage()
+  local data = storage.save_safe_bridge
+  if data.historical_furnace_claimed == true then
+    return {claimed = false, reason = "already claimed"}
+  end
+  local surface = game.surfaces["nauvis"]
+  local found = surface.find_entities_filtered({
+    name = "stone-furnace",
+    position = {x = -70, y = -8},
+    radius = 0.1,
+    force = "player",
+    limit = 1,
+  })
+  local furnace = found[1]
+  if furnace == nil or not furnace.valid or furnace.position.x ~= -70 or furnace.position.y ~= -8 or furnace.unit_number ~= 27 then
+    return {claimed = false, reason = "historical furnace not found"}
+  end
+  data.owned_machines[furnace.unit_number] = true
+  data.historical_furnace_claimed = true
+  return {claimed = true, unit_number = furnace.unit_number}
+end
+
+local function claim_units(request)
+  ensure_storage()
+  local claimed = {}
+  local unit_number = request.unit_number
+  local entity = nil
+  if unit_number ~= nil then
+    local agent = stored_agent()
+    local nearby = agent.surface.find_entities_filtered({position = agent.position, radius = 96, force = agent.force})
+    for _, candidate in pairs(nearby) do
+      if candidate.unit_number == unit_number then
+        entity = candidate
+        break
+      end
+    end
+    if entity ~= nil and entity.valid and (entity.name == "stone-furnace" or entity.name == "burner-mining-drill") and entity.force.name == "player" then
+      storage.save_safe_bridge.owned_machines[entity.unit_number] = true
+      claimed[#claimed + 1] = entity.unit_number
+    end
+  end
+  return {claimed = claimed, requested = unit_number or 0, found = entity ~= nil and entity.valid or false}
 end
 
 local function finite_number(value, name)
@@ -513,6 +596,7 @@ local function walk_to(request)
   if type(request) ~= "table" then
     error("request must be a table")
   end
+  validate_run(request)
   local agent = stored_agent()
   if agent == nil then
     error("AI character does not exist")
@@ -523,17 +607,104 @@ local function walk_to(request)
   return movement_snapshot()
 end
 
-local function stop_agent()
-  local movement = storage.save_safe_bridge.movement
+function stop_all_actions()
+  local data = storage.save_safe_bridge
+  local movement = data.movement
   movement.state = "idle"
   movement.reason = "stopped"
   movement.waypoints = {}
   movement.waypoint_index = 0
+  movement.lookahead_index = 0
+  movement.path_id = 0
+  local action = data.action
+  action.kind = "idle"
+  action.reason = "stopped"
   local agent = stored_agent()
+  local crafting_queue_size = 0
   if agent ~= nil then
     stop_walking(agent)
+    agent.mining_state = {mining = false}
+    local guard = 0
+    while agent.crafting_queue_size > 0 and guard < 1000 do
+      agent.cancel_crafting(1, 1)
+      guard = guard + 1
+    end
+    crafting_queue_size = agent.crafting_queue_size or 0
   end
-  return movement_snapshot()
+  return {
+    movement = movement_snapshot(),
+    action = action_snapshot(),
+    crafting_queue_size = crafting_queue_size,
+    stopped = true,
+  }
+end
+
+local function stop_agent()
+  ensure_storage()
+  return stop_all_actions()
+end
+
+function validate_run(request)
+  ensure_storage()
+  local run = storage.save_safe_bridge.run
+  local token = nil
+  if type(request) == "table" then
+    token = request.run_token
+  end
+  if run ~= nil and run.active then
+    if token == nil then
+      error("an active run requires a matching run_token")
+    end
+    if token ~= run.token then
+      error("run_token does not match the active run")
+    end
+    if game.tick >= run.deadline then
+      error("the active run has reached its deadline")
+    end
+  elseif token ~= nil then
+    error("no active run for the provided run_token")
+  end
+end
+
+function begin_run(request)
+  ensure_storage()
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local data = storage.save_safe_bridge
+  local token = request.token
+  if type(token) ~= "string" or token == "" then
+    error("token must be a non-empty string")
+  end
+  local duration = finite_number(request.duration_seconds, "duration_seconds")
+  if duration <= 0 or duration > 1500 then
+    error("duration_seconds must be greater than 0 and at most 1500")
+  end
+  if data.run ~= nil and data.run.active then
+    error("a run is already active")
+  end
+  data.run = {
+    token = token,
+    active = true,
+    deadline = game.tick + math.floor(duration * 60),
+  }
+  return {
+    token = data.run.token,
+    active = true,
+    deadline = data.run.deadline,
+    started_tick = game.tick,
+  }
+end
+
+function end_run()
+  ensure_storage()
+  local data = storage.save_safe_bridge
+  if data.run ~= nil then
+    data.run.active = false
+  end
+  local stopped = stop_all_actions()
+  stopped.active = false
+  return stopped
 end
 
 local function update_walking()
@@ -621,15 +792,118 @@ local function on_path_finished(event)
   data.movement.state = "walking"
 end
 
-local function give_stone_furnace()
+local DIRECTION_VALUES = {
+  north = defines.direction.north,
+  east = defines.direction.east,
+  south = defines.direction.south,
+  west = defines.direction.west,
+}
+local DIRECTION_NAMES = {
+  [defines.direction.north] = "north",
+  [defines.direction.east] = "east",
+  [defines.direction.south] = "south",
+  [defines.direction.west] = "west",
+}
+
+local function parse_direction(value)
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "string" or DIRECTION_VALUES[value] == nil then
+    error("direction must be north, east, south, or west")
+  end
+  return DIRECTION_VALUES[value]
+end
+
+local function direction_name(value)
+  return DIRECTION_NAMES[value] or tostring(value)
+end
+
+local function machine_owned(entity)
+  return storage.save_safe_bridge.owned_machines[entity.unit_number] == true
+end
+
+local function drop_target_ok(entity)
+  local target = entity.drop_target
+  if target == nil or not target.valid then
+    return true
+  end
+  return machine_owned(target)
+end
+
+local function drop_target_summary(entity)
+  local target = entity.drop_target
+  if target == nil or not target.valid then
+    return nil
+  end
+  return {
+    name = target.name,
+    unit_number = target.unit_number,
+    x = target.position.x,
+    y = target.position.y,
+    owned = machine_owned(target),
+  }
+end
+
+local function place_entity_core(request, entity_name)
   local agent = stored_agent()
   if agent == nil then
     error("AI character does not exist")
   end
-  local inserted = agent.insert({name = "stone-furnace", count = 1})
+  local movement = storage.save_safe_bridge.movement
+  if movement.state == "walking" or movement.state == "pathing" then
+    error("AI character is still moving")
+  end
+  local target = {x = finite_number(request.x, "x"), y = finite_number(request.y, "y")}
+  local direction = parse_direction(request.direction) or defines.direction.north
+  local buildable = agent.can_place_entity({name = entity_name, position = target, direction = direction})
+  local clear = agent.surface.can_place_entity({
+    name = entity_name,
+    position = target,
+    direction = direction,
+    force = agent.force,
+    build_check_type = defines.build_check_type.manual,
+  })
+  if not buildable or not clear then
+    if distance(agent.position, target) > agent.build_distance then
+      error("target is outside the AI character build distance")
+    end
+    error("target is blocked")
+  end
+  if agent.get_item_count(entity_name) < 1 then
+    error("AI inventory has no " .. entity_name)
+  end
+  local created = agent.surface.create_entity({
+    name = entity_name,
+    position = target,
+    force = agent.force,
+    direction = direction,
+  })
+  if created == nil then
+    error("placement failed")
+  end
+  -- Reject placements whose engine-chosen drop point feeds a non-owned building.
+  if not drop_target_ok(created) then
+    created.destroy()
+    error("placement would output into a non-owned building")
+  end
+  local removed = agent.remove_item({name = entity_name, count = 1})
+  if removed < 1 then
+    created.destroy()
+    error("failed to deduct the item from AI inventory")
+  end
+  storage.save_safe_bridge.owned_machines[created.unit_number] = true
   return {
-    inserted = inserted,
-    inventory_count = agent.get_item_count("stone-furnace"),
+    placed = true,
+    item = entity_name,
+    unit_number = created.unit_number,
+    x = created.position.x,
+    y = created.position.y,
+    force = created.force.name,
+    direction = direction_name(created.direction),
+    owned = true,
+    removed = removed,
+    inventory_count = agent.get_item_count(entity_name),
     agent_unit_number = agent.unit_number,
   }
 end
@@ -638,63 +912,20 @@ local function place_stone_furnace(request)
   if type(request) ~= "table" then
     error("request must be a table")
   end
-  local agent = stored_agent()
-  if agent == nil then
-    error("AI character does not exist")
-  end
-  if storage.save_safe_bridge.movement.state == "walking" or storage.save_safe_bridge.movement.state == "pathing" then
-    error("AI character is still moving")
-  end
-  local x = finite_number(request.x, "x")
-  local y = finite_number(request.y, "y")
-  local target = {x = x, y = y}
-  if not agent.can_place_entity({name = "stone-furnace", position = target}) then
-    if distance(agent.position, target) > agent.build_distance then
-      error("target is outside the AI character build distance")
-    end
-    error("target is blocked")
-  end
-  if agent.get_item_count("stone-furnace") < 1 then
-    error("AI inventory has no stone furnace")
-  end
-  local surface = agent.surface
-  local created = surface.create_entity({
-    name = "stone-furnace",
-    position = target,
-    force = agent.force,
-    build_check_type = defines.build_check_type.manual,
-  })
-  if created == nil then
-    error("placement failed")
-  end
-  local removed = agent.remove_item({name = "stone-furnace", count = 1})
-  return {
-    placed = true,
-    item = "stone-furnace",
-    unit_number = created.unit_number,
-    x = created.position.x,
-    y = created.position.y,
-    force = created.force.name,
-    removed = removed,
-    inventory_count = agent.get_item_count("stone-furnace"),
-    agent_unit_number = agent.unit_number,
-  }
+  validate_run(request)
+  return place_entity_core(request, "stone-furnace")
 end
 
 local function place_item(request)
   if type(request) ~= "table" then
     error("request must be a table")
   end
-  local item = request.item
-  local entity_name = PLACEABLE_ITEMS[item]
+  validate_run(request)
+  local entity_name = PLACEABLE_ITEMS[request.item]
   if entity_name == nil then
     error("item is not allowed for placement")
   end
-  request.item = item
-  if item == "stone-furnace" then
-    return place_stone_furnace(request)
-  end
-  error("item is not allowed for placement")
+  return place_entity_core(request, entity_name)
 end
 
 local function require_agent()
@@ -713,15 +944,20 @@ local function find_machine(request)
     if game.get_entity_by_unit_number ~= nil then
       found = game.get_entity_by_unit_number(unit_number)
     end
-    if found == nil then
-      local nearby = agent.surface.find_entities_filtered({
-        position = agent.position,
-        radius = 96,
-        type = "furnace",
-      })
-      for _, entity in pairs(nearby) do
-        if entity.unit_number == unit_number then
-          found = entity
+    if found == nil or not found.valid then
+      for _, kind in pairs({"furnace", "mining-drill"}) do
+        local nearby = agent.surface.find_entities_filtered({
+          position = agent.position,
+          radius = 96,
+          type = kind,
+        })
+        for _, entity in pairs(nearby) do
+          if entity.unit_number == unit_number then
+            found = entity
+            break
+          end
+        end
+        if found ~= nil then
           break
         end
       end
@@ -729,22 +965,22 @@ local function find_machine(request)
   else
     local x = finite_number(request.x, "x")
     local y = finite_number(request.y, "y")
-    local nearby = agent.surface.find_entities_filtered({
-      position = {x = x, y = y},
-      radius = 0.6,
-      type = "furnace",
-      limit = 1,
-    })
-    found = nearby[1]
+    found = agent.surface.find_entity("stone-furnace", {x = x, y = y})
+    if found == nil then
+      found = agent.surface.find_entity("burner-mining-drill", {x = x, y = y})
+    end
   end
-  if found == nil or not found.valid then
-    error("machine does not exist")
+  if found == nil or not found.valid or not MACHINE_NAMES[found.name] then
+    error("machine does not exist or is not supported")
   end
-  if found.type ~= "furnace" or found.name ~= "stone-furnace" then
-    error("only stone-furnace interaction is allowed")
+  if found.surface ~= agent.surface then
+    error("machine is on another surface")
   end
   if found.force.name ~= agent.force.name then
     error("machine belongs to another force")
+  end
+  if distance(agent.position, found.position) > 96 then
+    error("machine is farther than 96 tiles from the agent")
   end
   return agent, found
 end
@@ -755,7 +991,19 @@ local function require_reach(agent, entity)
   end
 end
 
-local function furnace_inventory(entity, kind)
+local function require_owned(entity)
+  if not machine_owned(entity) then
+    error("machine is not owned by the agent")
+  end
+end
+
+local function machine_inventory(entity, kind)
+  if entity.type == "mining-drill" then
+    if kind ~= "fuel" then
+      error("mining drills only support the fuel inventory")
+    end
+    return entity.get_fuel_inventory()
+  end
   if kind == "fuel" then
     return entity.get_fuel_inventory()
   end
@@ -768,34 +1016,64 @@ local function furnace_inventory(entity, kind)
   error("inventory kind must be fuel, input, or output")
 end
 
-local function inspect_entity(request)
-  if type(request) ~= "table" then
-    error("request must be a table")
+local function burner_remaining_fuel(entity)
+  if entity.burner == nil then
+    return nil
   end
-  local agent, entity = find_machine(request)
-  local fuel = furnace_inventory(entity, "fuel")
-  local input = furnace_inventory(entity, "input")
-  local output = furnace_inventory(entity, "output")
-  return {
+  return entity.burner.remaining_burning_fuel
+end
+
+local function inspect_entity_core(agent, entity)
+  local base = {
     name = entity.name,
     type = entity.type,
     unit_number = entity.unit_number,
     x = entity.position.x,
     y = entity.position.y,
     status = entity_status_name(entity),
-    reachable = agent.can_reach_entity(entity),
-    is_crafting = entity.is_crafting(),
-    crafting_progress = entity.crafting_progress or 0,
-    fuel = inventory_counts(fuel),
-    input = inventory_counts(input),
-    output = inventory_counts(output),
+    direction = direction_name(entity.direction),
+    owned = machine_owned(entity),
+    reachable = agent ~= nil and agent.can_reach_entity(entity) or false,
   }
+  if entity.type == "mining-drill" then
+    -- Mining drills are not crafting machines; read drill-specific fields only.
+    base.mining_progress = entity.mining_progress
+    local target = entity.mining_target
+    base.mining_target = (target ~= nil and target.valid) and {
+      name = target.name,
+      amount = target.amount,
+      x = target.position.x,
+      y = target.position.y,
+    } or nil
+    base.drop_position = {x = entity.drop_position.x, y = entity.drop_position.y}
+    base.drop_target = drop_target_summary(entity)
+    base.fuel = inventory_counts(entity.get_fuel_inventory())
+    base.burner_remaining_fuel = burner_remaining_fuel(entity)
+  else
+    base.is_crafting = entity.is_crafting()
+    base.crafting_progress = entity.crafting_progress or 0
+    base.products_finished = entity.products_finished or 0
+    base.fuel = inventory_counts(entity.get_fuel_inventory())
+    base.input = inventory_counts(entity.get_inventory(defines.inventory.furnace_source))
+    base.output = inventory_counts(entity.get_output_inventory())
+    base.burner_remaining_fuel = burner_remaining_fuel(entity)
+  end
+  return base
+end
+
+local function inspect_entity(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local agent, entity = find_machine(request)
+  return inspect_entity_core(agent, entity)
 end
 
 local function insert_into_entity(request)
   if type(request) ~= "table" then
     error("request must be a table")
   end
+  validate_run(request)
   local kind = request.inventory_kind
   local item = request.item
   local count = math.floor(finite_number(request.count, "count"))
@@ -806,11 +1084,12 @@ local function insert_into_entity(request)
     error("item is not allowed for this inventory")
   end
   local agent, entity = find_machine(request)
+  require_owned(entity)
   require_reach(agent, entity)
   if agent.get_item_count(item) < count then
     error("AI inventory does not have enough items")
   end
-  local inventory = furnace_inventory(entity, kind)
+  local inventory = machine_inventory(entity, kind)
   if inventory == nil then
     error("machine inventory is missing")
   end
@@ -837,6 +1116,7 @@ local function take_from_entity(request)
   if type(request) ~= "table" then
     error("request must be a table")
   end
+  validate_run(request)
   local kind = request.inventory_kind or "output"
   local item = request.item
   local count = math.floor(finite_number(request.count, "count"))
@@ -847,8 +1127,9 @@ local function take_from_entity(request)
     error("item is not allowed for this inventory")
   end
   local agent, entity = find_machine(request)
+  require_owned(entity)
   require_reach(agent, entity)
-  local inventory = furnace_inventory(entity, kind)
+  local inventory = machine_inventory(entity, kind)
   if inventory == nil then
     error("machine inventory is missing")
   end
@@ -875,6 +1156,94 @@ local function take_from_entity(request)
     unit_number = entity.unit_number,
     agent_count = agent.get_item_count(item),
     machine = inspect_entity({unit_number = entity.unit_number}),
+  }
+end
+
+local function rotate_entity(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  validate_run(request)
+  local agent, entity = find_machine(request)
+  require_owned(entity)
+  require_reach(agent, entity)
+  if entity.type ~= "mining-drill" then
+    error("only mining drills can be rotated")
+  end
+  local direction = parse_direction(request.direction)
+  if direction == nil then
+    error("direction is required")
+  end
+  -- The drill must not feed a non-owned building before or after rotating.
+  if not drop_target_ok(entity) then
+    error("drill currently outputs into a non-owned building")
+  end
+  local previous = entity.direction
+  entity.direction = direction
+  if not drop_target_ok(entity) then
+    entity.direction = previous
+    error("rotation would output into a non-owned building")
+  end
+  return {
+    unit_number = entity.unit_number,
+    rotated = true,
+    direction = direction_name(entity.direction),
+    drop_position = {x = entity.drop_position.x, y = entity.drop_position.y},
+    drop_target = drop_target_summary(entity),
+  }
+end
+
+local function production_snapshot()
+  ensure_storage()
+  local data = storage.save_safe_bridge
+  local agent = stored_agent()
+  local machines = {}
+  local drills = {}
+  local total_resource_amount = 0
+  local stale = {}
+  for unit_number, owned in pairs(data.owned_machines) do
+    if owned then
+      local entity = nil
+      if game.get_entity_by_unit_number ~= nil then
+        entity = game.get_entity_by_unit_number(unit_number)
+      end
+      if entity ~= nil and entity.valid and machine_owned(entity) then
+        machines[#machines + 1] = inspect_entity_core(agent, entity)
+        if entity.type == "mining-drill" then
+          local resources = {}
+          local amount = 0
+          local found = entity.surface.find_entities_filtered({area = entity.mining_area, type = "resource"})
+          for _, resource in pairs(found) do
+            resources[resource.name] = (resources[resource.name] or 0) + resource.amount
+            amount = amount + resource.amount
+          end
+          total_resource_amount = total_resource_amount + amount
+          drills[#drills + 1] = {
+            unit_number = entity.unit_number,
+            mining_area = {
+              left_top = {x = entity.mining_area.left_top.x, y = entity.mining_area.left_top.y},
+              right_bottom = {x = entity.mining_area.right_bottom.x, y = entity.mining_area.right_bottom.y},
+            },
+            resource_amount = amount,
+            resources = resources,
+          }
+        end
+      else
+        stale[#stale + 1] = unit_number
+      end
+    end
+  end
+  for _, unit_number in ipairs(stale) do
+    data.owned_machines[unit_number] = nil
+  end
+  return {
+    tick = game.tick,
+    machine_count = #machines,
+    machines = machines,
+    mining_coverage = {
+      total_resource_amount = total_resource_amount,
+      drills = drills,
+    },
   }
 end
 
@@ -968,8 +1337,14 @@ local function scan_resources(request)
   return {radius = radius, generated_only = true, resources = result}
 end
 
-local function action_snapshot()
+function action_snapshot()
+  ensure_storage()
   local action = storage.save_safe_bridge.action
+  local agent = storage.save_safe_bridge.agent_entity
+  local crafting_queue_size = 0
+  if agent ~= nil and agent.valid then
+    crafting_queue_size = agent.crafting_queue_size or 0
+  end
   return {
     kind = action.kind,
     resource = action.resource,
@@ -980,6 +1355,7 @@ local function action_snapshot()
     crafted = action.crafted,
     started_tick = action.started_tick,
     reason = action.reason,
+    crafting_queue_size = crafting_queue_size,
     tick = game.tick,
   }
 end
@@ -988,6 +1364,7 @@ local function mine_resource(request)
   if type(request) ~= "table" then
     error("request must be a table")
   end
+  validate_run(request)
   local agent = stored_agent()
   if agent == nil then
     error("AI character does not exist")
@@ -1055,10 +1432,58 @@ local function inspect_recipe(request)
   }
 end
 
+local function read_prototype_field(prototype, field)
+  local ok, value = pcall(function()
+    return prototype[field]
+  end)
+  if not ok then
+    return nil
+  end
+  return value
+end
+
+local function inspect_item(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local item_name = request.item
+  if type(item_name) ~= "string" or item_name == "" then
+    error("item is required")
+  end
+  local prototype = prototypes.item[item_name]
+  if prototype == nil then
+    error("unknown item")
+  end
+  local place_result = prototype.place_result
+  local result = {
+    item = item_name,
+    place_result_name = place_result ~= nil and place_result.name or nil,
+  }
+  if place_result == nil then
+    return result
+  end
+  -- Report raw prototype facts only, never layout advice.
+  local collision_box = read_prototype_field(place_result, "collision_box")
+  if collision_box ~= nil then
+    result.collision_box = {
+      left_top = {x = collision_box.left_top.x, y = collision_box.left_top.y},
+      right_bottom = {x = collision_box.right_bottom.x, y = collision_box.right_bottom.y},
+    }
+  end
+  result.tile_width = read_prototype_field(place_result, "tile_width")
+  result.tile_height = read_prototype_field(place_result, "tile_height")
+  result.type = place_result.type
+  result.mining_speed = read_prototype_field(place_result, "mining_speed")
+  result.resource_searching_radius = read_prototype_field(place_result, "resource_searching_radius")
+  result.vector_to_place_result = read_prototype_field(place_result, "vector_to_place_result")
+  return result
+end
+
 local function craft_item(request)
   if type(request) ~= "table" then
     error("request must be a table")
   end
+  validate_run(request)
   local agent = stored_agent()
   if agent == nil then
     error("AI character does not exist")
@@ -1080,11 +1505,26 @@ end
 
 local function update_action()
   local data = storage.save_safe_bridge
-  if data == nil or data.action == nil or data.action.kind ~= "mining" then
+  if data == nil or data.action == nil then
     return
   end
-  local agent = stored_agent()
   local action = data.action
+  local agent = stored_agent()
+  if action.kind == "crafting" then
+    if agent == nil then
+      action.kind = "failed"
+      action.reason = "AI character is missing"
+      return
+    end
+    if agent.crafting_queue_size == 0 then
+      action.kind = action.crafted > 0 and "crafted" or "failed"
+      action.reason = action.crafted > 0 and "" or "crafting did not complete"
+    end
+    return
+  end
+  if action.kind ~= "mining" then
+    return
+  end
   if agent == nil then
     action.kind = "failed"
     action.reason = "AI character is missing"
@@ -1147,6 +1587,14 @@ end
 script.on_init(ensure_storage)
 script.on_configuration_changed(ensure_storage)
 script.on_event(defines.events.on_tick, function()
+  ensure_storage()
+  local run = storage.save_safe_bridge.run
+  if run ~= nil and run.active and game.tick >= run.deadline then
+    run.active = false
+    stop_all_actions()
+    update_locator()
+    return
+  end
   update_walking()
   update_action()
   update_locator()
@@ -1161,7 +1609,6 @@ remote.add_interface(INTERFACE_NAME, {
   walk_to = walk_to,
   movement_status = movement_snapshot,
   stop_agent = stop_agent,
-  give_stone_furnace = give_stone_furnace,
   place_stone_furnace = place_stone_furnace,
   place_item = place_item,
   inventory = inventory_summary,
@@ -1169,10 +1616,17 @@ remote.add_interface(INTERFACE_NAME, {
   mine_resource = mine_resource,
   inspect_recipe = inspect_recipe,
   inspect_smelting_recipe = inspect_smelting_recipe,
+  inspect_item = inspect_item,
   inspect_entity = inspect_entity,
   insert_into_entity = insert_into_entity,
   take_from_entity = take_from_entity,
+  rotate_entity = rotate_entity,
+  production_snapshot = production_snapshot,
   craft_item = craft_item,
   action_status = action_snapshot,
   locate = locate,
+  begin_run = begin_run,
+  claim_historical_furnace = claim_historical_furnace,
+  claim_units = claim_units,
+  end_run = end_run,
 })

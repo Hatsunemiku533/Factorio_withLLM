@@ -101,6 +101,8 @@ def call_remote(function_name, request=None):
                     rendered = '"' + value + '"'
                 elif isinstance(value, bool):
                     rendered = "true" if value else "false"
+                elif isinstance(value, (list, dict)):
+                    rendered = json.dumps(value, ensure_ascii=False).replace("[", "{").replace("]", "}")
                 else:
                     rendered = str(value)
                 fields.append(f"{key} = {rendered}")
