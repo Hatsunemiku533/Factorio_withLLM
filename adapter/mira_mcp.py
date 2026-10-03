@@ -1,10 +1,12 @@
 """Restricted local MCP bridge for the Mira agent.
 
-The model can observe, walk, stop, and update bounded memory files. Raw RCON,
-item creation, resets, and arbitrary file paths are not exposed.
+The model can observe, walk, mine, craft, place and use stone furnaces, and
+update bounded memory files. Raw RCON, free items, resets, and arbitrary file
+paths are not exposed.
 """
 
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -433,6 +435,8 @@ TOOLS = {
 
 
 def debug(text):
+    if os.environ.get("MIRA_MCP_DEBUG") != "1":
+        return
     with (ROOT / "adapter" / "mcp-debug.log").open("a", encoding="utf-8") as handle:
         handle.write(text + "\n")
 

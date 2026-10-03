@@ -4,6 +4,8 @@ mode: primary
 model: coding_plan/deepseek-v4.1-flash
 steps: 28
 permission:
+  "*": deny
+  "factorio-mira_*": allow
   read: deny
   edit: deny
   glob: deny

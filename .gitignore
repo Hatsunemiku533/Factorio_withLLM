@@ -6,3 +6,8 @@ server/config/server-id.json
 server-test/config/rconpw
 server-test/config/server-id.json
 *.log
+__pycache__/
+*.py[cod]
+# Deployed mod copies; edit mods/save-safe-bridge/ instead.
+/server-test/mods/save-safe-bridge/
+/server-test/mods/save-safe-bridge_*.zip

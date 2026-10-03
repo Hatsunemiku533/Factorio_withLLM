@@ -131,10 +131,15 @@ def main():
 
     result = query()
     names = [entity["name"] for entity in result["entities"]]
+    agent = call_remote("agent_status")
     checks = {
         "stone_furnace_present": "stone-furnace" in names,
         "speed_is_one": result["speed"] == 1,
-        "no_unattached_character": all(character["player"] is not None for character in result["characters"]),
+        "one_mira_character": sum(character["unit_number"] == agent["unit_number"] for character in result["characters"]) == 1,
+        "no_unexpected_unattached_character": all(
+            character["player"] or character["unit_number"] == agent["unit_number"]
+            for character in result["characters"]
+        ),
     }
     print(json.dumps({"result": result, "checks": checks}, ensure_ascii=False, indent=2))
     return 0 if all(checks.values()) else 1
