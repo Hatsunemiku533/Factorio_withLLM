@@ -2,7 +2,7 @@
 
 目标：后台留着一个**不会被重置的小工厂**。AI 从最简单的生产任务开始建设；你可以随时用正常游戏窗口连进去巡视，兴致来了就自己摆几台机器。
 
-当前状态：**阶段 3B 已通过（2026-10-03）。** AI 工程师已改名为 Mira。她通过 `ustc/deepseek-flash` 自己找到石头、采矿并制作石炉，成品进入自己的 inventory。正式 `world/shared-world.zip` 未修改。尚未放置这台石炉或开始炼铁。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+当前状态：**阶段 3C 已通过（2026-10-03）。** Mira 头顶有名字，地图上可以找到她。她用火山 `coding_plan/deepseek-v4.1-flash` 自己采矿、放下石炉并炼出铁板，5 块 iron plate 在她自己的 inventory 里。正式 `world/shared-world.zip` 未修改。还没有自动扩建。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 现在就能确定的事
 
@@ -32,4 +32,6 @@ FLE 提供了很有用的积木：Docker 里跑 Factorio 服务器、用 RCON �
 - 第一阶段主动统一钉在 Factorio `2.0.73`，以减少变量。这不是“FLE 只能使用 2.0.73”；其他版本仍待实测。
 - 确认后台调用模型走哪条通道、怎么限量。OpenCode 订阅不自动覆盖 FLE 评测脚本自己的 API 调用。
 
-阶段 0 至阶段 3B 已完成。bridge 的观察接口不修改实体、玩家、库存、速度或工厂布局；它只更新 bridge 自身的数据型诊断计数。Mira 已能观察、移动、采矿和按真实配方制作。FLE 高层工具仍不能直接接入。
+阶段 0 至阶段 3C 已完成。bridge 的观察接口不修改实体、玩家、库存、速度或工厂布局；它只更新 bridge 自身的数据型诊断计数。Mira 已能观察、移动、采矿、制作、放置自己的石炉，并和石炉交换物品。FLE 高层工具仍不能直接接入。
+
+Future agents should have stable identity independent from model provider. Provider outage should leave that character idle/safe rather than silently switching personality.

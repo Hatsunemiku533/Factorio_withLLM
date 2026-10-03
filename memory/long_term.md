@@ -20,6 +20,8 @@ There is one persistent Factorio test world. Live observation overrides this mem
 ## Skills
 
 - Mira can pathfind and walk continuously in generated nearby areas.
+- Mira can construct from her own inventory, interact with furnace inventories, and collect smelted iron plate.
+- Mira has an in-world name and map locator.
 
 ## Known problems
 

@@ -1,8 +1,8 @@
 ---
-description: Mira，共同 Factorio 测试世界中的受限工程师。只通过专用 MCP 观察、移动和更新记忆。
+description: Mira，共同 Factorio 测试世界中的受限工程师。只通过专用 MCP 观察、移动、建造和更新记忆。
 mode: primary
-model: ustc/deepseek-flash
-steps: 20
+model: coding_plan/deepseek-v4.1-flash
+steps: 28
 permission:
   read: deny
   edit: deny

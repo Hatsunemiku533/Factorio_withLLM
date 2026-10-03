@@ -95,12 +95,29 @@ def call_remote(function_name, request=None):
         send_lua(client, 'rcon.print("ready")')
         arguments = ""
         if request is not None:
-            arguments = ", " + json.dumps(request, ensure_ascii=True)
+            fields = []
+            for key, value in request.items():
+                if isinstance(value, str):
+                    rendered = '"' + value + '"'
+                elif isinstance(value, bool):
+                    rendered = "true" if value else "false"
+                else:
+                    rendered = str(value)
+                fields.append(f"{key} = {rendered}")
+            arguments = ", {" + ", ".join(fields) + "}"
         lua = f'remote.call("save_safe_bridge", "{function_name}"{arguments})'
-        response = send_lua(client, f"rcon.print(helpers.table_to_json({lua}))")
+        response = send_lua(
+            client,
+            "local ok, result = pcall(function() return "
+            + lua
+            + " end); if ok then rcon.print(helpers.table_to_json(result)) else rcon.print(tostring(result)) end",
+        )
     finally:
         client.close()
-    return json.loads(response)
+    stripped = response.strip()
+    if not stripped.startswith("{"):
+        raise RuntimeError(stripped.splitlines()[0])
+    return json.loads(stripped)
 
 
 def main():

@@ -1,15 +1,41 @@
 local INTERFACE_NAME = "save_safe_bridge"
 local MAX_RADIUS = 32
 
+local AGENT_ID = "mira"
+local AGENT_DISPLAY_NAME = "Mira"
 local AGENT_COLOR = {r = 0.2, g = 0.6, b = 1.0, a = 1.0}
+local NAME_OFFSET = {0, -2.6}
+local NAME_SCALE = 3.2
+local LOCATOR_INTERVAL = 120
+local LOCATOR_MOVE_THRESHOLD = 2
+local PLACEABLE_ITEMS = {
+  ["stone-furnace"] = "stone-furnace",
+}
+local INSERT_ITEMS = {
+  fuel = {coal = true, wood = true},
+  input = {["iron-ore"] = true, ["copper-ore"] = true, stone = true},
+}
+local TAKE_ITEMS = {
+  fuel = {coal = true, wood = true},
+  input = {["iron-ore"] = true, ["copper-ore"] = true, stone = true},
+  output = {["iron-plate"] = true, ["copper-plate"] = true, ["stone-brick"] = true},
+}
 
 local function ensure_storage()
   if storage.save_safe_bridge == nil then
     storage.save_safe_bridge = {}
   end
   local data = storage.save_safe_bridge
-  data.schema = 5
+  data.schema = 6
   data.query_count = data.query_count or 0
+  data.agent_id = data.agent_id or AGENT_ID
+  data.display_name = AGENT_DISPLAY_NAME
+  data.name_render_id = data.name_render_id or 0
+  data.name_scale = data.name_scale or 0
+  data.chart_tag_number = data.chart_tag_number or 0
+  data.locator_x = data.locator_x or 0
+  data.locator_y = data.locator_y or 0
+  data.locator_tick = data.locator_tick or 0
   if data.agent_unit_number == nil then
     data.agent_unit_number = 0
   end
@@ -131,9 +157,183 @@ local function stored_agent()
   return nil
 end
 
+local function distance(a, b)
+  local dx = a.x - b.x
+  local dy = a.y - b.y
+  return math.sqrt(dx * dx + dy * dy)
+end
+
+local function inventory_counts(inventory)
+  local counts = {}
+  if inventory == nil then
+    return counts
+  end
+  for index = 1, #inventory do
+    local stack = inventory[index]
+    if stack.valid_for_read then
+      counts[stack.name] = (counts[stack.name] or 0) + stack.count
+    end
+  end
+  return counts
+end
+
+local function entity_status_name(entity)
+  if entity.status == nil then
+    return ""
+  end
+  for name, value in pairs(defines.entity_status) do
+    if value == entity.status then
+      return name
+    end
+  end
+  return tostring(entity.status)
+end
+
+local function get_name_object()
+  local data = storage.save_safe_bridge
+  if data.name_render_id == nil or data.name_render_id == 0 then
+    return nil
+  end
+  return rendering.get_object_by_id(data.name_render_id)
+end
+
+local function ensure_nameplate(agent)
+  local data = storage.save_safe_bridge
+  local object = get_name_object()
+  if object ~= nil and object.valid and data.name_scale == NAME_SCALE then
+    return object
+  end
+  if object ~= nil and object.valid then
+    object.destroy()
+  end
+  object = rendering.draw_text({
+    text = AGENT_DISPLAY_NAME,
+    surface = agent.surface,
+    target = {entity = agent, offset = NAME_OFFSET},
+    color = {r = 1, g = 1, b = 1, a = 1},
+    scale = NAME_SCALE,
+    alignment = "center",
+    vertical_alignment = "bottom",
+    scale_with_zoom = true,
+  })
+  data.name_render_id = object.id
+  data.name_scale = NAME_SCALE
+  return object
+end
+
+local function destroy_extra_mira_tags(agent, keep_number)
+  local tags = agent.force.find_chart_tags(agent.surface)
+  for _, tag in pairs(tags) do
+    if tag.valid and tag.text == AGENT_DISPLAY_NAME and tag.tag_number ~= keep_number then
+      tag.destroy()
+    end
+  end
+end
+
+local function find_chart_tag(agent)
+  local data = storage.save_safe_bridge
+  local tags = agent.force.find_chart_tags(agent.surface)
+  local found = nil
+  for _, tag in pairs(tags) do
+    if tag.valid and tag.text == AGENT_DISPLAY_NAME then
+      if data.chart_tag_number ~= 0 and tag.tag_number == data.chart_tag_number then
+        found = tag
+      elseif found == nil then
+        found = tag
+      end
+    end
+  end
+  if found ~= nil then
+    data.chart_tag_number = found.tag_number
+    destroy_extra_mira_tags(agent, found.tag_number)
+  end
+  return found
+end
+
+local function chart_around(agent)
+  local position = agent.position
+  agent.force.chart(agent.surface, {
+    {x = position.x - 32, y = position.y - 32},
+    {x = position.x + 32, y = position.y + 32},
+  })
+end
+
+local function ensure_locator(agent, force_update)
+  local data = storage.save_safe_bridge
+  local tag = find_chart_tag(agent)
+  local position = agent.position
+  if tag == nil or not tag.valid then
+    chart_around(agent)
+    tag = agent.force.add_chart_tag(agent.surface, {
+      position = position,
+      text = AGENT_DISPLAY_NAME,
+      icon = {type = "virtual", name = "signal-info"},
+    })
+    if tag == nil then
+      data.chart_tag_number = 0
+      return nil
+    end
+    data.chart_tag_number = tag.tag_number
+    data.locator_x = position.x
+    data.locator_y = position.y
+    data.locator_tick = game.tick
+    destroy_extra_mira_tags(agent, tag.tag_number)
+    return tag
+  end
+  local moved = distance(position, {x = data.locator_x, y = data.locator_y})
+  if force_update or moved >= LOCATOR_MOVE_THRESHOLD then
+    chart_around(agent)
+    tag.position = position
+    tag.text = AGENT_DISPLAY_NAME
+    data.locator_x = position.x
+    data.locator_y = position.y
+    data.locator_tick = game.tick
+  end
+  destroy_extra_mira_tags(agent, tag.tag_number)
+  return tag
+end
+
+local function ensure_identity(agent, force_update)
+  if agent == nil or not agent.valid then
+    return {
+      agent_id = AGENT_ID,
+      display_name = AGENT_DISPLAY_NAME,
+      name_visible = false,
+      marker_valid = false,
+    }
+  end
+  local name_object = ensure_nameplate(agent)
+  local tag = ensure_locator(agent, force_update)
+  return {
+    agent_id = AGENT_ID,
+    display_name = AGENT_DISPLAY_NAME,
+    unit_number = agent.unit_number,
+    surface = agent.surface.name,
+    x = agent.position.x,
+    y = agent.position.y,
+    name_visible = name_object ~= nil and name_object.valid or false,
+    marker_valid = tag ~= nil and tag.valid or false,
+    marker_x = tag and tag.position.x or nil,
+    marker_y = tag and tag.position.y or nil,
+    marker_tag_number = tag and tag.tag_number or 0,
+  }
+end
+
+local function update_locator()
+  if game.tick % LOCATOR_INTERVAL ~= 0 then
+    return
+  end
+  local agent = stored_agent()
+  if agent == nil then
+    return
+  end
+  ensure_identity(agent, false)
+end
+
 local function ensure_agent_character()
   local existing = stored_agent()
   if existing ~= nil then
+    ensure_identity(existing, true)
     return agent_snapshot(existing, false)
   end
 
@@ -157,17 +357,16 @@ local function ensure_agent_character()
   local data = storage.save_safe_bridge
   data.agent_entity = entity
   data.agent_unit_number = entity.unit_number
+  ensure_identity(entity, true)
   return agent_snapshot(entity, true)
 end
 
 local function agent_status()
-  return agent_snapshot(stored_agent(), false)
-end
-
-local function distance(a, b)
-  local dx = a.x - b.x
-  local dy = a.y - b.y
-  return math.sqrt(dx * dx + dy * dy)
+  local agent = stored_agent()
+  if agent ~= nil then
+    ensure_identity(agent, false)
+  end
+  return agent_snapshot(agent, false)
 end
 
 local DIRECTIONS = {
@@ -251,6 +450,19 @@ local function movement_snapshot()
     agent_y = agent and agent.position.y or nil,
     speed = game.speed,
   }
+end
+
+local function locate()
+  local agent = stored_agent()
+  local identity = ensure_identity(agent, true)
+  local movement = movement_snapshot()
+  identity.movement = {
+    state = movement.state,
+    reason = movement.reason,
+    agent_x = movement.agent_x,
+    agent_y = movement.agent_y,
+  }
+  return identity
 end
 
 local function fail_movement(reason)
@@ -458,6 +670,7 @@ local function place_stone_furnace(request)
   local removed = agent.remove_item({name = "stone-furnace", count = 1})
   return {
     placed = true,
+    item = "stone-furnace",
     unit_number = created.unit_number,
     x = created.position.x,
     y = created.position.y,
@@ -468,22 +681,252 @@ local function place_stone_furnace(request)
   }
 end
 
+local function place_item(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local item = request.item
+  local entity_name = PLACEABLE_ITEMS[item]
+  if entity_name == nil then
+    error("item is not allowed for placement")
+  end
+  request.item = item
+  if item == "stone-furnace" then
+    return place_stone_furnace(request)
+  end
+  error("item is not allowed for placement")
+end
+
+local function require_agent()
+  local agent = stored_agent()
+  if agent == nil then
+    error("AI character does not exist")
+  end
+  return agent
+end
+
+local function find_machine(request)
+  local agent = require_agent()
+  local found = nil
+  if request.unit_number ~= nil then
+    local unit_number = math.floor(finite_number(request.unit_number, "unit_number"))
+    if game.get_entity_by_unit_number ~= nil then
+      found = game.get_entity_by_unit_number(unit_number)
+    end
+    if found == nil then
+      local nearby = agent.surface.find_entities_filtered({
+        position = agent.position,
+        radius = 96,
+        type = "furnace",
+      })
+      for _, entity in pairs(nearby) do
+        if entity.unit_number == unit_number then
+          found = entity
+          break
+        end
+      end
+    end
+  else
+    local x = finite_number(request.x, "x")
+    local y = finite_number(request.y, "y")
+    local nearby = agent.surface.find_entities_filtered({
+      position = {x = x, y = y},
+      radius = 0.6,
+      type = "furnace",
+      limit = 1,
+    })
+    found = nearby[1]
+  end
+  if found == nil or not found.valid then
+    error("machine does not exist")
+  end
+  if found.type ~= "furnace" or found.name ~= "stone-furnace" then
+    error("only stone-furnace interaction is allowed")
+  end
+  if found.force.name ~= agent.force.name then
+    error("machine belongs to another force")
+  end
+  return agent, found
+end
+
+local function require_reach(agent, entity)
+  if not agent.can_reach_entity(entity) then
+    error("machine is outside interaction reach")
+  end
+end
+
+local function furnace_inventory(entity, kind)
+  if kind == "fuel" then
+    return entity.get_fuel_inventory()
+  end
+  if kind == "input" then
+    return entity.get_inventory(defines.inventory.furnace_source)
+  end
+  if kind == "output" then
+    return entity.get_output_inventory()
+  end
+  error("inventory kind must be fuel, input, or output")
+end
+
+local function inspect_entity(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local agent, entity = find_machine(request)
+  local fuel = furnace_inventory(entity, "fuel")
+  local input = furnace_inventory(entity, "input")
+  local output = furnace_inventory(entity, "output")
+  return {
+    name = entity.name,
+    type = entity.type,
+    unit_number = entity.unit_number,
+    x = entity.position.x,
+    y = entity.position.y,
+    status = entity_status_name(entity),
+    reachable = agent.can_reach_entity(entity),
+    is_crafting = entity.is_crafting(),
+    crafting_progress = entity.crafting_progress or 0,
+    fuel = inventory_counts(fuel),
+    input = inventory_counts(input),
+    output = inventory_counts(output),
+  }
+end
+
+local function insert_into_entity(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local kind = request.inventory_kind
+  local item = request.item
+  local count = math.floor(finite_number(request.count, "count"))
+  if count < 1 or count > 20 then
+    error("count must be between 1 and 20")
+  end
+  if INSERT_ITEMS[kind] == nil or not INSERT_ITEMS[kind][item] then
+    error("item is not allowed for this inventory")
+  end
+  local agent, entity = find_machine(request)
+  require_reach(agent, entity)
+  if agent.get_item_count(item) < count then
+    error("AI inventory does not have enough items")
+  end
+  local inventory = furnace_inventory(entity, kind)
+  if inventory == nil then
+    error("machine inventory is missing")
+  end
+  local inserted = inventory.insert({name = item, count = count})
+  if inserted < 1 then
+    error("machine could not accept items")
+  end
+  local removed = agent.remove_item({name = item, count = inserted})
+  if removed < inserted then
+    inventory.remove({name = item, count = inserted - removed})
+    error("failed to deduct items from AI inventory")
+  end
+  return {
+    inserted = inserted,
+    item = item,
+    inventory_kind = kind,
+    unit_number = entity.unit_number,
+    agent_count = agent.get_item_count(item),
+    machine = inspect_entity({unit_number = entity.unit_number}),
+  }
+end
+
+local function take_from_entity(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local kind = request.inventory_kind or "output"
+  local item = request.item
+  local count = math.floor(finite_number(request.count, "count"))
+  if count < 1 or count > 20 then
+    error("count must be between 1 and 20")
+  end
+  if TAKE_ITEMS[kind] == nil or not TAKE_ITEMS[kind][item] then
+    error("item is not allowed for this inventory")
+  end
+  local agent, entity = find_machine(request)
+  require_reach(agent, entity)
+  local inventory = furnace_inventory(entity, kind)
+  if inventory == nil then
+    error("machine inventory is missing")
+  end
+  local available = inventory.get_item_count(item)
+  if available < 1 then
+    error("machine does not contain that item")
+  end
+  local want = math.min(count, available)
+  local extracted = inventory.remove({name = item, count = want})
+  if extracted < 1 then
+    error("failed to take items from machine")
+  end
+  local inserted = agent.insert({name = item, count = extracted})
+  if inserted < extracted then
+    inventory.insert({name = item, count = extracted - inserted})
+    if inserted < 1 then
+      error("AI inventory is full")
+    end
+  end
+  return {
+    taken = inserted,
+    item = item,
+    inventory_kind = kind,
+    unit_number = entity.unit_number,
+    agent_count = agent.get_item_count(item),
+    machine = inspect_entity({unit_number = entity.unit_number}),
+  }
+end
+
+local function inspect_smelting_recipe(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local query = request.item or request.resource
+  if type(query) ~= "string" or query == "" then
+    error("item is required")
+  end
+  local force = game.forces.player
+  for _, recipe in pairs(force.recipes) do
+    if recipe.enabled and recipe.category == "smelting" then
+      local uses_query = false
+      local ingredients = {}
+      for _, ingredient in pairs(recipe.ingredients) do
+        ingredients[#ingredients + 1] = {name = ingredient.name, amount = ingredient.amount}
+        if ingredient.name == query then
+          uses_query = true
+        end
+      end
+      local products = {}
+      for _, product in pairs(recipe.products) do
+        products[#products + 1] = {name = product.name, amount = product.amount}
+        if product.name == query then
+          uses_query = true
+        end
+      end
+      if uses_query then
+        return {
+          item = query,
+          recipe = recipe.name,
+          category = recipe.category,
+          enabled = recipe.enabled,
+          energy = recipe.energy,
+          ingredients = ingredients,
+          products = products,
+        }
+      end
+    end
+  end
+  error("no enabled smelting recipe found")
+end
+
 local function inventory_summary()
   local agent = stored_agent()
   if agent == nil then
     error("AI character does not exist")
   end
   local inventory = agent.get_main_inventory()
-  local counts = {}
-  if inventory ~= nil then
-    for index = 1, #inventory do
-      local stack = inventory[index]
-      if stack.valid_for_read then
-        counts[stack.name] = (counts[stack.name] or 0) + stack.count
-      end
-    end
-  end
-  return {unit_number = agent.unit_number, items = counts}
+  return {unit_number = agent.unit_number, items = inventory_counts(inventory)}
 end
 
 local function scan_resources(request)
@@ -706,6 +1149,7 @@ script.on_configuration_changed(ensure_storage)
 script.on_event(defines.events.on_tick, function()
   update_walking()
   update_action()
+  update_locator()
 end)
 script.on_event(defines.events.on_script_path_request_finished, on_path_finished)
 
@@ -719,10 +1163,16 @@ remote.add_interface(INTERFACE_NAME, {
   stop_agent = stop_agent,
   give_stone_furnace = give_stone_furnace,
   place_stone_furnace = place_stone_furnace,
+  place_item = place_item,
   inventory = inventory_summary,
   scan_resources = scan_resources,
   mine_resource = mine_resource,
   inspect_recipe = inspect_recipe,
+  inspect_smelting_recipe = inspect_smelting_recipe,
+  inspect_entity = inspect_entity,
+  insert_into_entity = insert_into_entity,
+  take_from_entity = take_from_entity,
   craft_item = craft_item,
   action_status = action_snapshot,
+  locate = locate,
 })

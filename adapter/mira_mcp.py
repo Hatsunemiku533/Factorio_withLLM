@@ -126,16 +126,33 @@ def scan_resources(arguments):
     return bridge_probe.call_remote("scan_resources", {"radius": radius})
 
 
+def wait_action(timeout=25):
+    started = time.time()
+    final = None
+    while time.time() < started + timeout:
+        final = bridge_probe.call_remote("action_status")
+        if final["kind"] not in ("mining", "crafting"):
+            return final
+        time.sleep(0.5)
+    return final
+
+
 def mine_resource(arguments):
     count = int(arguments["count"])
     if count < 1 or count > 10:
         raise ValueError("count must be between 1 and 10")
-    return bridge_probe.call_remote("mine_resource", {
+    started = bridge_probe.call_remote("mine_resource", {
         "resource": str(arguments["resource"]),
         "x": float(arguments["x"]),
         "y": float(arguments["y"]),
         "count": count,
     })
+    final = wait_action(max(8, count * 4))
+    return {
+        "started": started,
+        "final": final,
+        "inventory": bridge_probe.call_remote("inventory"),
+    }
 
 
 def inspect_recipe(arguments):
@@ -148,8 +165,82 @@ def craft(arguments):
         raise ValueError("count must be between 1 and 5")
     started = bridge_probe.call_remote("craft_item", {"item": str(arguments["item"]), "count": count})
     recipe = bridge_probe.call_remote("inspect_recipe", {"item": str(arguments["item"])})
-    time.sleep(max(0.5, float(recipe["energy"]) + 0.3))
+    time.sleep(max(0.5, float(recipe.get("energy") or 0.5) * count + 0.3))
     return {"started": started, "inventory": bridge_probe.call_remote("inventory")}
+
+
+def locate():
+    return bridge_probe.call_remote("locate")
+
+
+def inspect_smelting_recipe(arguments):
+    return bridge_probe.call_remote("inspect_smelting_recipe", {"item": str(arguments["item"])})
+
+
+def place_item(arguments):
+    item = str(arguments["item"])
+    if item != "stone-furnace":
+        raise ValueError("only stone-furnace placement is allowed")
+    return bridge_probe.call_remote("place_item", {
+        "item": item,
+        "x": float(arguments["x"]),
+        "y": float(arguments["y"]),
+    })
+
+
+def inspect_entity(arguments):
+    request = {}
+    if "unit_number" in arguments:
+        request["unit_number"] = int(arguments["unit_number"])
+    else:
+        request["x"] = float(arguments["x"])
+        request["y"] = float(arguments["y"])
+    return bridge_probe.call_remote("inspect_entity", request)
+
+
+def insert_into_entity(arguments):
+    count = int(arguments["count"])
+    if count < 1 or count > 20:
+        raise ValueError("count must be between 1 and 20")
+    kind = str(arguments["inventory_kind"])
+    if kind not in ("fuel", "input"):
+        raise ValueError("inventory_kind must be fuel or input")
+    return bridge_probe.call_remote("insert_into_entity", {
+        "unit_number": int(arguments["unit_number"]),
+        "item": str(arguments["item"]),
+        "count": count,
+        "inventory_kind": kind,
+    })
+
+
+def take_from_entity(arguments):
+    count = int(arguments["count"])
+    if count < 1 or count > 20:
+        raise ValueError("count must be between 1 and 20")
+    kind = str(arguments.get("inventory_kind", "output"))
+    if kind not in ("fuel", "input", "output"):
+        raise ValueError("inventory_kind must be fuel, input, or output")
+    return bridge_probe.call_remote("take_from_entity", {
+        "unit_number": int(arguments["unit_number"]),
+        "item": str(arguments["item"]),
+        "count": count,
+        "inventory_kind": kind,
+    })
+
+
+def wait_for_entity(arguments):
+    unit_number = int(arguments["unit_number"])
+    item = str(arguments.get("item", "iron-plate"))
+    needed = int(arguments.get("count", 1))
+    timeout = min(60, max(5, float(arguments.get("timeout", 40))))
+    started = time.time()
+    last = None
+    while time.time() - started < timeout:
+        last = bridge_probe.call_remote("inspect_entity", {"unit_number": unit_number})
+        if (last.get("output") or {}).get(item, 0) >= needed:
+            return {"ready": True, "elapsed_seconds": round(time.time() - started, 2), "entity": last}
+        time.sleep(1.5)
+    return {"ready": False, "elapsed_seconds": round(time.time() - started, 2), "entity": last}
 
 
 def update_current(arguments):
@@ -225,6 +316,80 @@ TOOLS = {
         "description": "Craft 1 to 5 items from Mira's own inventory using the real recipe.",
         "inputSchema": {"type": "object", "properties": {"item": {"type": "string"}, "count": {"type": "integer"}}, "required": ["item", "count"], "additionalProperties": False},
         "handler": craft,
+    },
+    "locate": {
+        "description": "Return Mira's identity, coordinates, movement state, and whether her map marker is valid.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": lambda arguments: locate(),
+    },
+    "inspect_smelting_recipe": {
+        "description": "Read one enabled furnace smelting recipe for an item or resource.",
+        "inputSchema": {"type": "object", "properties": {"item": {"type": "string"}}, "required": ["item"], "additionalProperties": False},
+        "handler": inspect_smelting_recipe,
+    },
+    "place_item": {
+        "description": "Place one allowed item from Mira's inventory at nearby coordinates. Currently only stone-furnace.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"item": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}},
+            "required": ["item", "x", "y"],
+            "additionalProperties": False,
+        },
+        "handler": place_item,
+    },
+    "inspect_entity": {
+        "description": "Inspect a nearby stone furnace: status, fuel, input, and output.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"unit_number": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}},
+            "additionalProperties": False,
+        },
+        "handler": inspect_entity,
+    },
+    "insert_into_entity": {
+        "description": "Insert 1 to 20 of Mira's own items into a reachable stone furnace fuel or input inventory.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "unit_number": {"type": "integer"},
+                "item": {"type": "string"},
+                "count": {"type": "integer"},
+                "inventory_kind": {"type": "string"},
+            },
+            "required": ["unit_number", "item", "count", "inventory_kind"],
+            "additionalProperties": False,
+        },
+        "handler": insert_into_entity,
+    },
+    "take_from_entity": {
+        "description": "Take 1 to 20 real items from a reachable stone furnace, usually from output.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "unit_number": {"type": "integer"},
+                "item": {"type": "string"},
+                "count": {"type": "integer"},
+                "inventory_kind": {"type": "string"},
+            },
+            "required": ["unit_number", "item", "count"],
+            "additionalProperties": False,
+        },
+        "handler": take_from_entity,
+    },
+    "wait_for_entity": {
+        "description": "Wait until a furnace output contains an item, or until timeout. Default item is iron-plate.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "unit_number": {"type": "integer"},
+                "item": {"type": "string"},
+                "count": {"type": "integer"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["unit_number"],
+            "additionalProperties": False,
+        },
+        "handler": wait_for_entity,
     },
     "memory_read": {
         "description": "Read the bounded long-term and current memory. Cold logs are excluded.",
