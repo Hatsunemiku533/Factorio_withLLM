@@ -7,6 +7,9 @@ server-test/config/rconpw
 server-test/config/server-id.json
 *.log
 /runs/
+/board/messages.jsonl
+/board/cursors.json
+/board/*.tmp
 __pycache__/
 *.py[cod]
 # Deployed mod copies; edit mods/save-safe-bridge/ instead.

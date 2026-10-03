@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mira 留言板</title>
+<style>
+:root {
+  --bg: #F4F1EA;
+  --card: #FFFDF9;
+  --primary: #D97757;
+  --primary-hover: #C4623F;
+  --primary-soft: #F6E3DA;
+  --text: #29261B;
+  --muted: #6B6455;
+  --border: #E5DFD3;
+  --error: #B3452E;
+  --error-bg: #F7E4DE;
+  --cork: #D8C7A6;
+  --cork-dark: #BFA87F;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 20px 16px 40px; }
+
+header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+header h1 { font-size: 20px; margin: 0; font-weight: 600; }
+header .sub { color: var(--muted); font-size: 13px; }
+header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--primary); display: inline-block; margin-left: auto; }
+header .dot.err { background: var(--error); }
+
+/* cork board */
+.board {
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(255,255,255,.25), transparent 55%),
+    radial-gradient(ellipse at 80% 70%, rgba(0,0,0,.08), transparent 55%),
+    repeating-linear-gradient(35deg, rgba(0,0,0,.022) 0 2px, transparent 2px 7px),
+    repeating-linear-gradient(-25deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px),
+    var(--cork);
+  border: 10px solid #A98D63;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 2px rgba(0,0,0,.12), 0 6px 18px rgba(0,0,0,.08);
+  min-height: 420px;
+  padding: 22px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-content: flex-start;
+}
+
+.note {
+  background: var(--card);
+  width: 230px;
+  min-height: 120px;
+  padding: 26px 14px 12px;
+  border-radius: 2px 2px 6px 6px;
+  box-shadow: 0 4px 8px rgba(60,45,20,.28);
+  position: relative;
+  transform: rotate(var(--tilt, 0deg));
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.note.new { animation: pin-in .45s ease-out; }
+@keyframes pin-in {
+  from { transform: rotate(var(--tilt, 0deg)) scale(.7); opacity: 0; }
+  to   { transform: rotate(var(--tilt, 0deg)) scale(1); opacity: 1; }
+}
+.pin {
+  position: absolute; top: 8px; left: 50%; margin-left: -8px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #F2B79F, var(--primary) 60%, var(--primary-hover));
+  box-shadow: 0 2px 3px rgba(60,45,20,.5);
+}
+.note.mira .pin {
+  background: radial-gradient(circle at 35% 30%, #A9C9A0, #5F7F54 60%, #4A6540);
+}
+.meta { display: flex; gap: 6px; align-items: center; margin-top: 12px; font-size: 11.5px; color: var(--muted); }
+.who { background: var(--primary-soft); color: var(--primary-hover); border-radius: 4px; padding: 1px 6px; font-weight: 600; }
+.note.mira .who { background: #E7EEE4; color: #5F7F54; }
+.to { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+
+.empty { color: rgba(60,45,20,.55); font-size: 15px; padding: 40px 8px; width: 100%; text-align: center; }
+
+/* composer */
+.composer {
+  margin-top: 16px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px;
+}
+.composer label { font-size: 12.5px; color: var(--muted); margin-right: 6px; }
+.composer select {
+  background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; font-size: 13px; color: var(--text);
+}
+.composer textarea {
+  width: 100%; margin-top: 8px; min-height: 64px; resize: vertical;
+  background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; font-size: 14px; font-family: inherit; color: var(--text);
+}
+.composer .row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.composer .hint { font-size: 12px; color: var(--muted); }
+button {
+  background: var(--card); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px;
+}
+button:hover { background: var(--primary-soft); }
+button.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+button.primary:hover { background: var(--primary-hover); }
+button:disabled { opacity: .45; cursor: default; }
+.error { margin-top: 8px; background: var(--error-bg); color: var(--error); border-radius: 8px; padding: 7px 11px; font-size: 13px; display: none; }
+
+@media (max-width: 560px) {
+  .note { width: 100%; }
+  .board { padding: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .note.new { animation: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Mira 留言板</h1>
+    <span class="sub">共同工厂的公共留言层 · 每 3 秒自动刷新</span>
+    <span class="dot" id="live" title="连接状态"></span>
+  </header>
+
+  <div class="board" id="board">
+    <div class="empty">还没有留言。在下面写下第一条，钉上来。</div>
+  </div>
+
+  <div class="composer">
+    <label for="to">写给</label>
+    <select id="to">
+      <option value="mira">Mira</option>
+      <option value="all">所有人</option>
+    </select>
+    <span class="hint">留言最长 1000 字节；Mira 会在下一个 episode 开始时读到。</span>
+    <textarea id="text" placeholder="想对她说什么……"></textarea>
+    <div class="row">
+      <button class="primary" id="send">钉到板上</button>
+      <span class="hint" id="count">0 / 1000</span>
+    </div>
+    <div class="error" id="error"></div>
+  </div>
+</div>
+
+<script>
+const boardEl = document.getElementById("board");
+const textEl = document.getElementById("text");
+const toEl = document.getElementById("to");
+const sendBtn = document.getElementById("send");
+const errorEl = document.getElementById("error");
+const countEl = document.getElementById("count");
+const liveEl = document.getElementById("live");
+
+let seen = new Set();
+let newest = 0;
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function tilt(id) {
+  return ((id * 137) % 7) - 3; // -3..3 degrees, stable per message
+}
+
+function render(messages) {
+  if (!messages.length) {
+    boardEl.innerHTML = '<div class="empty">还没有留言。在下面写下第一条，钉上来。</div>';
+    return;
+  }
+  boardEl.innerHTML = "";
+  for (const m of messages) {
+    const note = document.createElement("div");
+    note.className = "note " + (m.author === "mira" ? "mira" : "stellan");
+    if (!seen.has(m.id)) note.classList.add("new");
+    note.style.setProperty("--tilt", tilt(m.id) + "deg");
+    note.innerHTML =
+      '<div class="pin"></div>' +
+      "<div>" + escapeHtml(m.text) + "</div>" +
+      '<div class="meta"><span class="who">' + escapeHtml(m.author) + "</span>" +
+      '<span>→</span><span class="to">' + escapeHtml(m.to) + "</span>" +
+      "<span>#" + m.id + "</span></div>";
+    boardEl.appendChild(note);
+    seen.add(m.id);
+  }
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/messages", {cache: "no-store"});
+    const data = await res.json();
+    if (data.ok) {
+      render(data.messages);
+      newest = data.messages.length ? data.messages[data.messages.length - 1].id : 0;
+      liveEl.classList.remove("err");
+    } else {
+      showError(data.error || "读取留言失败");
+      liveEl.classList.add("err");
+    }
+  } catch (e) {
+    liveEl.classList.add("err");
+  }
+}
+
+function updateCount() {
+  const len = new TextEncoder().encode(textEl.value).length;
+  countEl.textContent = len + " / 1000";
+  countEl.style.color = len > 1000 ? "var(--error)" : "";
+}
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = msg ? "block" : "none";
+}
+
+async function send() {
+  const text = textEl.value.trim();
+  if (!text) { showError("先写点内容。"); return; }
+  sendBtn.disabled = true;
+  showError("");
+  try {
+    const res = await fetch("/api/post", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({to: toEl.value, text})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      textEl.value = "";
+      updateCount();
+      await refresh();
+    } else {
+      showError(data.error || "发送失败");
+    }
+  } catch (e) {
+    showError("无法连接留言板服务。");
+  }
+  sendBtn.disabled = false;
+}
+
+sendBtn.addEventListener("click", send);
+textEl.addEventListener("input", updateCount);
+textEl.addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
+});
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

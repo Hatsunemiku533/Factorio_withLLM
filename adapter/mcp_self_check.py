@@ -35,10 +35,10 @@ def main():
         "rotate_entity", "inspect_entity", "insert_into_entity",
         "take_from_entity", "wait_for_entity", "memory_read",
         "memory_update_current", "memory_append_log",
-        "memory_propose_long_term", "episode_finish",
+        "memory_propose_long_term", "board_read", "board_post", "episode_finish",
     }
     names = {tool["name"] for tool in tools}
-    assert len(tools) == 22, names
+    assert len(tools) == 24, names
     assert names == expected, names ^ expected
     assert all(tool["inputSchema"]["type"] == "object" for tool in tools)
     schemas = {tool["name"]: tool["inputSchema"] for tool in tools}
@@ -51,7 +51,9 @@ def main():
     assert episode["properties"]["status"]["enum"] == ["continue", "blocker"]
     assert set(episode["required"]) == {"status", "summary", "current_goal"}
     assert schemas["episode_finish"]["properties"]["status"]["type"] == "string"
-    print("PASS: MCP handshake and all 22 allowed tools; no game calls or model requests.")
+    assert schemas["board_post"]["required"] == ["to", "text"]
+    assert "author" not in schemas["board_post"]["properties"]
+    print("PASS: MCP handshake and all 24 allowed tools; no game calls or model requests.")
     return 0
 
 

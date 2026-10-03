@@ -2,11 +2,13 @@
 
 目标：后台留着一个**不会被重置的小工厂**。AI 从最简单的生产任务开始建设；你可以随时用正常游戏窗口连进去巡视，兴致来了就自己摆几台机器。
 
-当前状态：**阶段 3C 已通过；阶段 4AB 未通过；4AB-R Gate A 已通过（2026-10-03）。** 所有权已改为可持久化的 `agent_id` 记录，历史机器 27–31 已精确恢复为 Mira 所有。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+当前状态：**阶段 3C 已通过；阶段 4AB 未通过；4AB-R Gate A（所有权持久化）与 Gate B（留言板 + 固定记忆注入）均已通过（2026-10-03）。** 下一步是在用户确认后重跑阶段 4AB。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 当前实现
 
 当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.8.0`，数据 schema 为 `8`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
+
+每个新 episode 由 runner 固定注入：长期记忆（只读）、短期工作记忆（可整份重写）、未读留言和高层任务。`board/` 是 Stellan 与 Mira 共享的公共留言层（追加式 JSONL，作者身份由各自入口固定），留言不是系统指令。双击根目录 `启动留言板.bat` 可打开网页留言板（`127.0.0.1:18930`，纯本地）。
 
 **不使用 FLE 运行时、官方 MCP、`FactorioInstance` 或 FLE 建造接口。** FLE 只作为早期调查参考，它的默认初始化与退出 reset 会破坏共同世界。`实现调查.md` 第 1–15 节是原始方案，第 16–24 节是逐步实测；旧阶段的文件名和能力描述不能当作当前操作说明。
 
@@ -26,7 +28,8 @@ Mira 已能观察、步行、采矿、查询配方、制作、放置自己库存
 | `server-test/` | AI 测试世界的独立 Docker 部署 | `config/` 与正式服独立；`mods/mod-list.json` 启用 bridge，`mods/save-safe-bridge/` 是部署副本，不在这里开发 |
 | `world/` | 正式 Factorio 原生存档 | `shared-world.zip` 是正式命名存档，`_autosave*.zip` 是正式服轮换自动保存；AI 实验不得改动或清理 |
 | `world-test/` | Mira 活动的测试原生存档 | `bridge-test.zip` 是测试命名存档，`_autosave*.zip` 是测试自动保存；不是可随便删的缓存 |
-| `memory/` | Mira 跨会话的事实与任务状态 | 不是游戏存档；`long_term.md` 是长期事实，`current.md` 是整份重写的当前状态，`log/` 是按日期追加的冷日志，不默认注入上下文 |
+| `memory/` | Mira 跨会话的事实与任务状态 | 不是游戏存档；`long_term.md` 是长期事实（每 episode 固定注入、Mira 不可直接改），`current.md` 是整份重写的当前状态，`log/` 是按日期追加的冷日志，不默认注入上下文 |
+| `board/` | 公共留言层 | `messages.jsonl` 与 `cursors.json` 是运行时数据，不进 Git；`README.md` 说明规则 |
 | `Factorio.v2.0.73-P2P/` | 本机 Factorio 游戏客户端 | 内部有三层同名目录，是现有安装结构，不为美观重排；实际读写数据在 `%APPDATA%\Factorio` |
 
 根目录文件：`README.md` 是入口，`AGENTS.md` 是工程安全规则，`实现调查.md` 是历史调查与验收证据，`opencode.json` 是 MCP 启动配置，`.gitignore` 区分源码与本机运行数据。
@@ -37,7 +40,10 @@ Mira 已能观察、步行、采矿、查询配方、制作、放置自己库存
 |---|---|---|
 | `mira_mcp.py` | 只向 Mira 暴露 19 个受限工具，含固定范围的记忆操作 | 由 OpenCode 通过 `opencode.json` 拉起，不是人工交互脚本 |
 | `bridge_probe.py` | 实际的 RCON 连接与 remote 调用封装，虽然名字含 probe，但仍是核心依赖 | 默认查询测试服；`--save` 会保存，`--ensure-agent` 可能创建角色，不能当离线检查 |
-| `mcp_self_check.py` | 检查 MCP 握手与 19 个工具的注册 | 可离线运行，不调用游戏工具、不启动模型、不读 RCON 密码 |
+| `mcp_self_check.py` | 检查 MCP 握手与 24 个工具的注册 | 可离线运行，不调用游戏工具、不启动模型、不读 RCON 密码 |
+| `board_store.py` | 留言板的追加存储、文件锁与按角色已读游标 | 被 MCP 和 CLI 引用，不单独运行 |
+| `board_cli.py` | Stellan 的命令行留言工具（post / list / unread） | 纯本地，不连接 Factorio，不暴露给 Mira |
+| `board_web.py` / `board_web.html` | 网页留言板（看 + 发，127.0.0.1:18930） | 由根目录 `启动留言板.bat` 启动 |
 
 MCP 默认不写调试日志。如需定位协议问题，只在临时调试时设置 `MIRA_MCP_DEBUG=1`；`adapter/mcp-debug.log` 可能包含任务文字、记忆和坐标，不提交，也不作为长期记忆。
 
