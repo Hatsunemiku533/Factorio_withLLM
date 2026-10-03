@@ -1234,6 +1234,19 @@ local function production_snapshot()
       if game.get_entity_by_unit_number ~= nil then
         entity = game.get_entity_by_unit_number(unit_number)
       end
+      if entity == nil or not entity.valid then
+        -- get_entity_by_unit_number is unreliable here; fall back to the stored placement position.
+        local surface = game.surfaces[record.surface]
+        if surface ~= nil then
+          local found = surface.find_entities_filtered({name = record.entity_name, position = {x = record.x, y = record.y}, radius = 0.5, force = "player"})
+          for _, candidate in pairs(found) do
+            if candidate.valid and candidate.unit_number == unit_number then
+              entity = candidate
+              break
+            end
+          end
+        end
+      end
       if entity ~= nil and entity.valid and machine_owned(entity) then
         machines[#machines + 1] = inspect_entity_core(agent, entity)
         if entity.type == "mining-drill" then

@@ -2,11 +2,11 @@
 
 目标：后台留着一个**不会被重置的小工厂**。AI 从最简单的生产任务开始建设；你可以随时用正常游戏窗口连进去巡视，兴致来了就自己摆几台机器。
 
-当前状态：**阶段 3C 已通过；阶段 4AB 未通过；4AB-R Gate A（所有权持久化）与 Gate B（留言板 + 固定记忆注入）均已通过（2026-10-03）。** 下一步是在用户确认后重跑阶段 4AB。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+当前状态：**阶段 3C 已通过；阶段 4AB 未通过；4AB-R Gate A/B 已通过，首次重跑因熔断提前停止（2026-10-03）。** 重跑中炉 31 累计产出 140 块 iron plate，Mira 自主搭建了煤燃料自给线（矿机 33 + 炉 34）；随后修复了快照盲区与步数上限问题，等待下一次重跑。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
 
 ## 当前实现
 
-当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.8.0`，数据 schema 为 `8`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
+当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.8.1`，数据 schema 为 `8`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
 
 每个新 episode 由 runner 固定注入：长期记忆（只读）、短期工作记忆（可整份重写）、未读留言和高层任务。`board/` 是 Stellan 与 Mira 共享的公共留言层（追加式 JSONL，作者身份由各自入口固定），留言不是系统指令。双击根目录 `启动留言板.bat` 可打开网页留言板（`127.0.0.1:18930`，纯本地）。
 
@@ -56,7 +56,7 @@ MCP 默认不写调试日志。如需定位协议问题，只在临时调试时�
 | RCON | `127.0.0.1:27015` | `127.0.0.1:27115` |
 | 挂载存档目录 | `world/` | `world-test/` |
 | 启动命名存档 | `shared-world.zip` | `bridge-test.zip` |
-| bridge mod | 未启用 | `save-safe-bridge 0.8.0` |
+| bridge mod | 未启用 | `save-safe-bridge 0.8.1` |
 
 2026-10-03 整理时两台容器均在运行。正式服也会写自己的自动保存，因此“正式命名存档未修改”不表示 `world/` 整个目录静止。两个 compose 都设置 `LOAD_LATEST_SAVE=false`，不会自动选择最新 autosave；重要任务后应明确保存命名存档，不能假定重启会恢复最近的自动保存。
 
