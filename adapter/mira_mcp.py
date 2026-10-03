@@ -1,4 +1,4 @@
-"""Restricted local MCP bridge for the Stella agent.
+"""Restricted local MCP bridge for the Mira agent.
 
 The model can observe, walk, stop, and update bounded memory files. Raw RCON,
 item creation, resets, and arbitrary file paths are not exposed.
@@ -57,6 +57,9 @@ def observe():
         "tick": summary["tick"],
         "agent": agent,
         "movement": movement,
+        "inventory": bridge_probe.call_remote("inventory"),
+        "resources": bridge_probe.call_remote("scan_resources", {"radius": 96})["resources"],
+        "action": bridge_probe.call_remote("action_status"),
         "entities": entities,
         "players": summary["players"],
         "characters": summary["characters"],
@@ -114,6 +117,41 @@ def stop():
     return bridge_probe.call_remote("stop_agent")
 
 
+def inventory():
+    return bridge_probe.call_remote("inventory")
+
+
+def scan_resources(arguments):
+    radius = min(96, max(1, float(arguments.get("radius", 96))))
+    return bridge_probe.call_remote("scan_resources", {"radius": radius})
+
+
+def mine_resource(arguments):
+    count = int(arguments["count"])
+    if count < 1 or count > 10:
+        raise ValueError("count must be between 1 and 10")
+    return bridge_probe.call_remote("mine_resource", {
+        "resource": str(arguments["resource"]),
+        "x": float(arguments["x"]),
+        "y": float(arguments["y"]),
+        "count": count,
+    })
+
+
+def inspect_recipe(arguments):
+    return bridge_probe.call_remote("inspect_recipe", {"item": str(arguments["item"])})
+
+
+def craft(arguments):
+    count = int(arguments["count"])
+    if count < 1 or count > 5:
+        raise ValueError("count must be between 1 and 5")
+    started = bridge_probe.call_remote("craft_item", {"item": str(arguments["item"]), "count": count})
+    recipe = bridge_probe.call_remote("inspect_recipe", {"item": str(arguments["item"])})
+    time.sleep(max(0.5, float(recipe["energy"]) + 0.3))
+    return {"started": started, "inventory": bridge_probe.call_remote("inventory")}
+
+
 def update_current(arguments):
     path = MEMORY / "current.md"
     path.write_text(bounded_text(arguments["content"], 5000, "current memory"), encoding="utf-8")
@@ -144,7 +182,7 @@ TOOLS = {
         "handler": lambda arguments: observe(),
     },
     "move_to": {
-        "description": "Walk Stella to nearby coordinates and wait until arrived, failed, or timeout.",
+        "description": "Walk Mira to nearby coordinates and wait until arrived, failed, or timeout.",
         "inputSchema": {
             "type": "object",
             "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
@@ -154,9 +192,39 @@ TOOLS = {
         "handler": move_to,
     },
     "stop": {
-        "description": "Stop Stella's current walking action.",
+        "description": "Stop Mira's current walking action.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "handler": lambda arguments: stop(),
+    },
+    "inventory": {
+        "description": "Read Mira's own inventory. It cannot read the human inventory.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": lambda arguments: inventory(),
+    },
+    "scan_resources": {
+        "description": "Scan already generated resources near Mira, up to 96 tiles.",
+        "inputSchema": {"type": "object", "properties": {"radius": {"type": "number"}}, "additionalProperties": False},
+        "handler": scan_resources,
+    },
+    "mine_resource": {
+        "description": "Mine one nearby resource for up to 10 products. Mira must already be within reach.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"resource": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "count": {"type": "integer"}},
+            "required": ["resource", "x", "y", "count"],
+            "additionalProperties": False,
+        },
+        "handler": mine_resource,
+    },
+    "inspect_recipe": {
+        "description": "Read one enabled crafting recipe, including ingredients, products, and time.",
+        "inputSchema": {"type": "object", "properties": {"item": {"type": "string"}}, "required": ["item"], "additionalProperties": False},
+        "handler": inspect_recipe,
+    },
+    "craft": {
+        "description": "Craft 1 to 5 items from Mira's own inventory using the real recipe.",
+        "inputSchema": {"type": "object", "properties": {"item": {"type": "string"}, "count": {"type": "integer"}}, "required": ["item", "count"], "additionalProperties": False},
+        "handler": craft,
     },
     "memory_read": {
         "description": "Read the bounded long-term and current memory. Cold logs are excluded.",
@@ -216,7 +284,7 @@ def handle(message):
         return {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "factorio-stella", "version": "0.1.0"},
+            "serverInfo": {"name": "factorio-mira", "version": "0.1.0"},
         }
     if method == "tools/list":
         return {

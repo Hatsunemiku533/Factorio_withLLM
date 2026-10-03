@@ -8,7 +8,7 @@ local function ensure_storage()
     storage.save_safe_bridge = {}
   end
   local data = storage.save_safe_bridge
-  data.schema = 4
+  data.schema = 5
   data.query_count = data.query_count or 0
   if data.agent_unit_number == nil then
     data.agent_unit_number = 0
@@ -27,6 +27,20 @@ local function ensure_storage()
     repaths = 0,
     direction = nil,
   }
+  data.action = data.action or {
+    kind = "idle",
+    resource = "",
+    target_x = 0,
+    target_y = 0,
+    requested = 0,
+    mined = 0,
+    crafted = 0,
+    started_tick = 0,
+    reason = "",
+    saw_progress = false,
+    next_tick = 0,
+  }
+  data.action.next_tick = data.action.next_tick or 0
 end
 
 local function finite_number(value, name)
@@ -454,6 +468,231 @@ local function place_stone_furnace(request)
   }
 end
 
+local function inventory_summary()
+  local agent = stored_agent()
+  if agent == nil then
+    error("AI character does not exist")
+  end
+  local inventory = agent.get_main_inventory()
+  local counts = {}
+  if inventory ~= nil then
+    for index = 1, #inventory do
+      local stack = inventory[index]
+      if stack.valid_for_read then
+        counts[stack.name] = (counts[stack.name] or 0) + stack.count
+      end
+    end
+  end
+  return {unit_number = agent.unit_number, items = counts}
+end
+
+local function scan_resources(request)
+  local agent = stored_agent()
+  if agent == nil then
+    error("AI character does not exist")
+  end
+  local radius = 32
+  if type(request) == "table" and request.radius ~= nil then
+    radius = finite_number(request.radius, "radius")
+  end
+  if radius < 1 or radius > 96 then
+    error("radius must be between 1 and 96")
+  end
+  local resources = agent.surface.find_entities_filtered({
+    position = agent.position,
+    radius = radius,
+    type = "resource",
+  })
+  local grouped = {}
+  for _, resource in pairs(resources) do
+    local key = resource.name
+    local entry = grouped[key]
+    local resource_distance = distance(agent.position, resource.position)
+    if entry == nil or resource_distance < entry.distance then
+      grouped[key] = {
+        name = resource.name,
+        x = resource.position.x,
+        y = resource.position.y,
+        amount = resource.amount,
+        distance = resource_distance,
+      }
+    end
+  end
+  local result = {}
+  for _, entry in pairs(grouped) do
+    result[#result + 1] = entry
+  end
+  return {radius = radius, generated_only = true, resources = result}
+end
+
+local function action_snapshot()
+  local action = storage.save_safe_bridge.action
+  return {
+    kind = action.kind,
+    resource = action.resource,
+    target_x = action.target_x,
+    target_y = action.target_y,
+    requested = action.requested,
+    mined = action.mined,
+    crafted = action.crafted,
+    started_tick = action.started_tick,
+    reason = action.reason,
+    tick = game.tick,
+  }
+end
+
+local function mine_resource(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local agent = stored_agent()
+  if agent == nil then
+    error("AI character does not exist")
+  end
+  local count = math.floor(finite_number(request.count, "count"))
+  if count < 1 or count > 10 then
+    error("count must be between 1 and 10")
+  end
+  local x = finite_number(request.x, "x")
+  local y = finite_number(request.y, "y")
+  local target = {x = x, y = y}
+  if distance(agent.position, target) > agent.resource_reach_distance then
+    error("resource is outside mining reach")
+  end
+  local found = agent.surface.find_entities_filtered({
+    position = target,
+    radius = 0.6,
+    name = request.resource,
+    type = "resource",
+    limit = 1,
+  })
+  if #found == 0 then
+    error("resource does not exist at target")
+  end
+  local action = storage.save_safe_bridge.action
+  action.kind = "mining"
+  action.resource = request.resource
+  action.target_x = x
+  action.target_y = y
+  action.requested = count
+  action.mined = 0
+  action.crafted = 0
+  action.started_tick = game.tick
+  action.reason = ""
+  action.saw_progress = false
+  local mining_time = prototypes.entity[request.resource].mineable_properties.mining_time
+  action.next_tick = game.tick + math.ceil(mining_time * 60)
+  agent.mining_state = {mining = true, position = target}
+  return action_snapshot()
+end
+
+local function inspect_recipe(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local recipe = prototypes.recipe[request.item]
+  if recipe == nil then
+    error("unknown recipe")
+  end
+  local technology = game.forces.player.recipes[request.item]
+  local ingredients = {}
+  for _, ingredient in pairs(recipe.ingredients) do
+    ingredients[#ingredients + 1] = {name = ingredient.name, amount = ingredient.amount}
+  end
+  local products = {}
+  for _, product in pairs(recipe.products) do
+    products[#products + 1] = {name = product.name, amount = product.amount}
+  end
+  return {
+    item = request.item,
+    enabled = technology ~= nil and technology.enabled or false,
+    energy = recipe.energy,
+    ingredients = ingredients,
+    products = products,
+  }
+end
+
+local function craft_item(request)
+  if type(request) ~= "table" then
+    error("request must be a table")
+  end
+  local agent = stored_agent()
+  if agent == nil then
+    error("AI character does not exist")
+  end
+  local count = math.floor(finite_number(request.count, "count"))
+  if count < 1 or count > 5 then
+    error("count must be between 1 and 5")
+  end
+  local started = agent.begin_crafting({count = count, recipe = request.item, silent = true})
+  local action = storage.save_safe_bridge.action
+  action.kind = started > 0 and "crafting" or "failed"
+  action.resource = request.item
+  action.requested = count
+  action.crafted = started
+  action.started_tick = game.tick
+  action.reason = started > 0 and "" or "crafting did not start"
+  return action_snapshot()
+end
+
+local function update_action()
+  local data = storage.save_safe_bridge
+  if data == nil or data.action == nil or data.action.kind ~= "mining" then
+    return
+  end
+  local agent = stored_agent()
+  local action = data.action
+  if agent == nil then
+    action.kind = "failed"
+    action.reason = "AI character is missing"
+    return
+  end
+  agent.mining_state = {mining = true, position = {x = action.target_x, y = action.target_y}}
+  if game.tick < (action.next_tick or 0) then
+    return
+  end
+  local before = agent.get_item_count(action.resource)
+  local found = agent.surface.find_entities_filtered({
+    position = {x = action.target_x, y = action.target_y},
+    radius = 0.6,
+    name = action.resource,
+    type = "resource",
+    limit = 1,
+  })
+  if #found == 0 then
+    action.kind = action.mined > 0 and "mined" or "failed"
+    action.reason = "resource depleted"
+    agent.mining_state = {mining = false}
+    return
+  end
+  local resource = found[1]
+  local amount_before = resource.amount
+  resource.amount = math.max(0, amount_before - 1)
+  local inserted = agent.insert({name = action.resource, count = 1})
+  if inserted < 1 then
+    resource.amount = amount_before
+    action.kind = "failed"
+    action.reason = "inventory is full"
+    agent.mining_state = {mining = false}
+    return
+  end
+  local gained = agent.get_item_count(action.resource) - before
+  if gained < 1 then
+    action.kind = "failed"
+    action.reason = "mining failed"
+    agent.mining_state = {mining = false}
+    return
+  end
+  action.mined = action.mined + gained
+  action.next_tick = game.tick + math.ceil(prototypes.entity[action.resource].mineable_properties.mining_time * 60)
+  if action.mined >= action.requested then
+    action.kind = "mined"
+    agent.mining_state = {mining = false}
+    return
+  end
+  agent.mining_state = {mining = true, position = {x = action.target_x, y = action.target_y}}
+end
+
 local function status()
   ensure_storage()
   return {
@@ -464,7 +703,10 @@ end
 
 script.on_init(ensure_storage)
 script.on_configuration_changed(ensure_storage)
-script.on_event(defines.events.on_tick, update_walking)
+script.on_event(defines.events.on_tick, function()
+  update_walking()
+  update_action()
+end)
 script.on_event(defines.events.on_script_path_request_finished, on_path_finished)
 
 remote.add_interface(INTERFACE_NAME, {
@@ -477,4 +719,10 @@ remote.add_interface(INTERFACE_NAME, {
   stop_agent = stop_agent,
   give_stone_furnace = give_stone_furnace,
   place_stone_furnace = place_stone_furnace,
+  inventory = inventory_summary,
+  scan_resources = scan_resources,
+  mine_resource = mine_resource,
+  inspect_recipe = inspect_recipe,
+  craft_item = craft_item,
+  action_status = action_snapshot,
 })
