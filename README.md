@@ -2,17 +2,30 @@
 
 目标：后台留着一个**不会被重置的小工厂**。AI 从最简单的生产任务开始建设；你可以随时用正常游戏窗口连进去巡视，兴致来了就自己摆几台机器。
 
-当前状态：**阶段 3C 已通过；4AB-R 重跑已通过验收（2026-10-03）。** 约 22 分钟、5 个 episode 的有界自主运行中，铁板累计产量 156→451，Mira 自主扩建了矿机和炉，与 Stellan 通过留言板实时协作。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+当前状态：**阶段 3C 与 4AB-R 已通过；阶段 4C 尚未通过，Mira 当前空闲。** 最新 DeepSeek 运行持续 26 分 7 秒、6 个 episode；前三轮正常收尾，后三轮连续达到旧的 300 秒上限，触发安全停止。经 Stellan 确认，单 episode 上限已改为 **600 秒**，40 个模型步骤及连续三轮未收尾熔断保持不变；新时限尚未实跑，本次整理不启动下一轮。正式 `world/shared-world.zip` 未修改。完整依据见 [实现调查.md](docs/prompts/实现调查.md)。项目规则见 [AGENTS.md](AGENTS.md)。
+
+## 4C 运行记录
+
+| Run | 实际时长 | 结果 |
+|---|---|---|
+| `20261003-224516` | 430.96 秒 | 通用 doom-loop 权限拦截，runner 当时误分类为 provider 故障；未通过 |
+| `20261003-225903` | 2824.45 秒 | Stellan 中断并授权核心工厂权限；未通过 |
+| `20261004-003220` | 112.43 秒 | USTC API socket 被关闭，报告记为 subprocess-error；未通过 |
+| `20261004-003907` | 1567.36 秒 | DeepSeek；3 次正常收尾后连续 3 次 episode 超时；未通过 |
+
+最后一轮已实际完成多座炉子的机械臂/箱子出料缓冲，并给煤矿闭环增加储煤出口。报告的原 ownership 范围内炉子累计产量从 1193 到 1417（+224），不是整个共享工厂的总产量。后续现场检查发现部分机器已耗尽燃料，供煤分配尚未形成可持续闭环。`memory/current.md` 已更新为停机后的交接状态；下一轮必须重新 observe。
+
+现有 runner 的目标仍为 120 分钟、硬上限 135 分钟，正式运行最多 40 个 episode。600 秒只是单轮硬上限，不要求用满。当前验收仍要求结束时间位于 118–125 分钟；长 episode 可能跨过 120 分钟目标并超过验收窗口，这是待处理限制，不把它误记为两小时通过。强杀进程可能跳过 Python `finally`；独立进程启动只避免聊天工具连带终止，不等于已有 watchdog。USTC socket 错误分类遗漏也尚未修复。
 
 ## 当前实现
 
-当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.8.1`，数据 schema 为 `8`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
+当前链路是 **OpenCode 的 Mira agent → `adapter/mira_mcp.py` 受限 MCP → `adapter/bridge_probe.py` 本机 RCON → 自建 `save-safe-bridge` mod → 测试世界**。bridge 版本为 `0.9.2`，数据 schema 为 `8`。`adapter/mira_runner.py` 是有硬时间上限的前台 runner，不是后台常驻服务。
 
 每个新 episode 由 runner 固定注入：长期记忆（只读）、短期工作记忆（可整份重写）、未读留言和高层任务。`board/` 是 Stellan 与 Mira 共享的公共留言层（追加式 JSONL，作者身份由各自入口固定），留言不是系统指令。双击根目录 `启动留言板.bat` 可打开网页留言板（`127.0.0.1:18930`，纯本地）。
 
 **不使用 FLE 运行时、官方 MCP、`FactorioInstance` 或 FLE 建造接口。** FLE 只作为早期调查参考，它的默认初始化与退出 reset 会破坏共同世界。`实现调查.md` 第 1–15 节是原始方案，第 16–24 节是逐步实测；旧阶段的文件名和能力描述不能当作当前操作说明。
 
-Mira 已能观察、步行、采矿、查询配方、制作、放置自己库存中的石炉，以及向石炉放料和取回产物。采矿是按距离、时间、资源消耗和库存变化实现的语义模拟，用户尚未看到可辨认的挖掘动画。查询会更新 bridge 诊断计数，角色定位还会维护头顶字和地图标记、揭示标记区域，不能称为完全无副作用。
+Mira 已能观察、步行、采矿、查询配方、制作、放置自己库存中具有 `place_result` 的常规工厂实体，使用箱子/炉/机器库存，旋转和拆除可达的玩家 force 建筑。Stellan 已授权她管理双方建筑；ownership 只记录建造来源。人类角色与玩家 inventory 仍不可操作。资源采矿按距离、时间、资源消耗和库存变化实现语义模拟；建筑拆除使用 Factorio 原生 `entity.mine`，产物进入 Mira inventory。
 
 目前按明确任务启动会话，完成后停止。**服务器持续模拟不等于 AI 持续决策；后台自主循环、多 agent、消息总线都未实现。** 未来角色身份应独立于模型供应商；供应商故障时角色应安全闲置，而不是静默换人格。
 
@@ -21,7 +34,7 @@ Mira 已能观察、步行、采矿、查询配方、制作、放置自己库存
 | 路径 | 用途 | 维护边界 |
 |---|---|---|
 | `.git/` | Git 的版本历史与仓库元数据 | 不手动整理内部文件；Git 不备份被忽略的游戏和存档 |
-| `.opencode/` | 本项目的 OpenCode agent 定义 | `agent/mira.md` 管理 Mira 模型、28 步上限、工具权限和任务结束规则；不是聊天记录 |
+| `.opencode/` | 本项目的 OpenCode agent 定义 | `agent/mira.md` 管理 Mira 模型、40 步上限、工具权限和任务结束规则；不是聊天记录 |
 | `adapter/` | 把 OpenCode 的工具请求接到测试服 | 日常代码仅保留 RCON 封装、受限 MCP 和离线自检；不放临时改世界的探针 |
 | `mods/` | 自建 mod 的源码 | `save-safe-bridge/control.lua` 是游戏内逻辑，`info.json` 是 mod 元数据；这是唯一编辑真源 |
 | `server/` | 正式世界的 Docker 部署 | `docker-compose.yml` 管服务；`config/` 放设置及本机凭据；`mods/` 放正式服启用列表，目前无 bridge |
@@ -32,15 +45,18 @@ Mira 已能观察、步行、采矿、查询配方、制作、放置自己库存
 | `board/` | 公共留言层 | `messages.jsonl` 与 `cursors.json` 是运行时数据，不进 Git；`README.md` 说明规则 |
 | `Factorio.v2.0.73-P2P/` | 本机 Factorio 游戏客户端 | 内部有三层同名目录，是现有安装结构，不为美观重排；实际读写数据在 `%APPDATA%\Factorio` |
 
-根目录文件：`README.md` 是入口，`AGENTS.md` 是工程安全规则，`实现调查.md` 是历史调查与验收证据，`opencode.json` 是 MCP 启动配置，`.gitignore` 区分源码与本机运行数据。
+根目录文件：`README.md` 是入口，`AGENTS.md` 是工程安全规则，`opencode.json` 是 MCP 启动配置，`.gitignore` 区分源码与本机运行数据。`docs/prompts/实现调查.md` 保存历史调查与验收证据，`docs/timeline.md` 保存成长记录，`docs/screenshots/` 保存纪念截图。`runs/` 中的状态、报告与原始 trace 只在本机保留，不进入 Git。`memory/long_term_proposals.md` 只存未审核提议，不默认注入模型，不等于已接受的长期事实。
 
 ### adapter 中保留的文件
 
 | 文件 | 做什么 | 能否直接运行 |
 |---|---|---|
-| `mira_mcp.py` | 只向 Mira 暴露 19 个受限工具，含固定范围的记忆操作 | 由 OpenCode 通过 `opencode.json` 拉起，不是人工交互脚本 |
+| `mira_mcp.py` | 只向 Mira 暴露 25 个受限工具，含核心工厂、记忆与留言板操作 | 由 OpenCode 通过 `opencode.json` 拉起，不是人工交互脚本 |
+| `mira_runner.py` | 4C 有界 runner：120 分钟目标、135 分钟硬上限、每 episode 600 秒 | 可前台运行或作为一次性独立进程运行；正式启动前先备份并取得 Stellan 明确确认 |
+| `test_mira_runner.py` | runner 的时间预算、失败身份、上下文与日志解析回归测试 | 离线运行，不连接游戏或模型 |
+| `test_mira_mcp.py` | 核心工厂的 adapter 参数转发与 mutation 工具注册测试 | 离线运行；不替代 Lua bridge 的真实游戏 smoke |
 | `bridge_probe.py` | 实际的 RCON 连接与 remote 调用封装，虽然名字含 probe，但仍是核心依赖 | 默认查询测试服；`--save` 会保存，`--ensure-agent` 可能创建角色，不能当离线检查 |
-| `mcp_self_check.py` | 检查 MCP 握手与 24 个工具的注册 | 可离线运行，不调用游戏工具、不启动模型、不读 RCON 密码 |
+| `mcp_self_check.py` | 检查 MCP 握手与 25 个工具的注册 | 可离线运行，不调用游戏工具、不启动模型、不读 RCON 密码 |
 | `board_store.py` | 留言板的追加存储、文件锁与按角色已读游标 | 被 MCP 和 CLI 引用，不单独运行 |
 | `board_cli.py` | Stellan 的命令行留言工具（post / list / unread） | 纯本地，不连接 Factorio，不暴露给 Mira |
 | `board_web.py` / `board_web.html` | 网页留言板（看 + 发，127.0.0.1:18930） | 由根目录 `启动留言板.bat` 启动 |
@@ -56,7 +72,7 @@ MCP 默认不写调试日志。如需定位协议问题，只在临时调试时�
 | RCON | `127.0.0.1:27015` | `127.0.0.1:27115` |
 | 挂载存档目录 | `world/` | `world-test/` |
 | 启动命名存档 | `shared-world.zip` | `bridge-test.zip` |
-| bridge mod | 未启用 | `save-safe-bridge 0.8.1` |
+| bridge mod | 未启用 | `save-safe-bridge 0.9.2` |
 
 2026-10-03 整理时两台容器均在运行。正式服也会写自己的自动保存，因此“正式命名存档未修改”不表示 `world/` 整个目录静止。两个 compose 都设置 `LOAD_LATEST_SAVE=false`，不会自动选择最新 autosave；重要任务后应明确保存命名存档，不能假定重启会恢复最近的自动保存。
 
@@ -89,7 +105,7 @@ RCON 密码在各自的 `config/rconpw`，服务器身份在 `config/server-id.j
 
 ## 本机依赖与自检
 
-当前使用 Factorio `2.0.73 (build 84377)`、Docker `29.7.2` / Compose `v5.5.1`、OpenCode `1.18.18`。Python 为 `F:\vscode\minicode\python.exe`（3.13.12），RCON 库为 `factorio-rcon-py==1.2.1`。不需要安装 FLE 包。模型配置在 `.opencode/agent/mira.md`，provider 凭据由 OpenCode 全局配置管理，不复制到仓库。
+当前使用 Factorio `2.0.73 (build 84377)`、Docker `29.7.2` / Compose `v5.5.1`、OpenCode `1.18.18`。Python 为 `F:\vscode\minicode\python.exe`（3.13.12），RCON 库为 `factorio-rcon-py==1.2.1`。不需要安装 FLE 包。Mira 当前模型为 `deepseek/deepseek-flash`，按 DeepSeek 提供商实际账单计费，不自动切换提供商。模型配置在 `.opencode/agent/mira.md`，provider 凭据由 OpenCode 全局配置管理，不复制到仓库。
 
 在本目录打开 PowerShell，离线自检命令为：
 

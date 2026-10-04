@@ -32,13 +32,13 @@ def main():
         "observe", "move_to", "stop", "inventory", "scan_resources",
         "mine_resource", "inspect_recipe", "craft", "locate",
         "inspect_smelting_recipe", "inspect_item", "place_item",
-        "rotate_entity", "inspect_entity", "insert_into_entity",
+        "rotate_entity", "dismantle_entity", "inspect_entity", "insert_into_entity",
         "take_from_entity", "wait_for_entity", "memory_read",
         "memory_update_current", "memory_append_log",
         "memory_propose_long_term", "board_read", "board_post", "episode_finish",
     }
     names = {tool["name"] for tool in tools}
-    assert len(tools) == 24, names
+    assert len(tools) == 25, names
     assert names == expected, names ^ expected
     assert all(tool["inputSchema"]["type"] == "object" for tool in tools)
     schemas = {tool["name"]: tool["inputSchema"] for tool in tools}
@@ -53,7 +53,7 @@ def main():
     assert schemas["episode_finish"]["properties"]["status"]["type"] == "string"
     assert schemas["board_post"]["required"] == ["to", "text"]
     assert "author" not in schemas["board_post"]["properties"]
-    print("PASS: MCP handshake and all 24 allowed tools; no game calls or model requests.")
+    print("PASS: MCP handshake and all 25 allowed tools; no game calls or model requests.")
     return 0
 
 

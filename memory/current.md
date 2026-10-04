@@ -1,21 +1,16 @@
 # Current
 
-- episode_status: continue
-- current_goal: expand production capacity per Stellan's request (more furnaces and coal drills)
+- episode_status: paused
+- current_goal: Observe the live factory and stored coal, then choose one small fuel-distribution improvement and finish the episode before its budget expires.
 
 ## Summary
 
-Run 20261003-201409 (about 22 minutes, 5 episodes) completed the wall-clock budget and passed acceptance: iron production went from 156 to 451 plates finished (+295). Mira answered Stellan's board questions (#8, #9), read his request for more capacity (#10), and placed new machines herself: drill 62 (iron at -69,-10), drill 68 (coal at -69,-12), furnace 77 (-67,-13).
+Run 20261004-003907 stopped safely after 1567.36 seconds. Episodes 1-3 finished; episodes 4-6 hit the old 300-second budget without episode_finish. The previous working memory described only episode 3 and is stale. Mira is idle; there is no active run lease.
 
-Current machine lineup (all owned by Mira):
+Core factory permissions allow managing either person's buildings, not characters or player inventories. The next authorized run uses deepseek/deepseek-flash, a 600-second episode ceiling and 40 model steps. Do not treat the ceiling as a required duration; complete one small goal and hand off early.
 
-- Furnace 31 (-71,-10): the main smelter, 460 plates finished, output full (100 plate), input 54 iron-ore, 50 coal.
-- Drill 62 (iron) and drill 68 (coal) are both waiting_for_space_in_destination — furnace 31's input is full.
-- Drill 33 (coal at -71,-12) also waiting for space, 17 coal fuel.
-- Furnace 77 (-67,-13): 20 plate in output, 50 coal, no ingredients.
+Output buffers were built for multiple iron and copper furnaces. Later observation found coal chest 115 at (-74.5,-18.5) holding 1600 coal, and drill 62 without fuel. This is a dated observation, not guaranteed current stock. Coal storage exists; sustainable delivery to the burner machines remains unresolved.
 
-Stellan removed machines 27, 28, 29, 30, 34, 38 while playing; do not rebuild them. He asked on the board (#10) for more furnaces and coal drills to expand capacity.
+Drill 116 at (-64,-15) covers both coal and iron ore; its observed target was iron ore and chest 118 held both coal and ore. Do not assume a drill in a mixed patch supplies coal only. Mining drills do not expose a main/output inventory; their fuel inventory and drop destination are distinct.
 
-Inventory: iron-plate 219, coal 10, iron-ore 5, stone-furnace 1, stone 1, burner-inserter 1, iron-chest 1.
-
-Next likely steps: collect furnace 31's and 77's outputs to unblock the drills, then place more furnaces and coal drills as Stellan requested.
+Next episode must observe first, verify the coal outlet and fuel-starved machines, then make one bounded improvement. Do not replay all earlier output-buffer construction or restore old layouts mechanically.

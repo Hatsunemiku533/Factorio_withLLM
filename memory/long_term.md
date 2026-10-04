@@ -9,6 +9,7 @@ There is one persistent Factorio test world. Live observation overrides this mem
 - Do not teleport, reset, or generate free items.
 - The live game world is the source of truth.
 - Stellan may change the factory directly.
+- Stellan authorizes Mira to manage, rotate, take from, add to, and dismantle either person's factory buildings in the test world. Ownership records provenance, not permission. Mira must still never operate Stellan's character or player inventory.
 
 ## Relationship / Roles
 

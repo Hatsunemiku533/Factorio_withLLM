@@ -10,6 +10,7 @@ import board_store
 
 PORT = 18930
 HTML = Path(__file__).with_name("board_web.html")
+RUN_STATE = Path(__file__).resolve().parents[1] / "runs" / "state.json"
 
 
 def read_messages():
@@ -17,6 +18,30 @@ def read_messages():
         return {"ok": True, "messages": board_store.recent(50)}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def read_state():
+    """Best-effort live positions; the board itself stays usable when the game is offline."""
+    try:
+        import bridge_probe
+        summary = bridge_probe.query()
+        agent = bridge_probe.call_remote("agent_status")
+        characters = {c["unit_number"]: c for c in summary.get("characters", [])}
+        stellan = None
+        for player in summary.get("players", []):
+            if player.get("connected") and player.get("character_unit_number"):
+                entity = characters.get(player["character_unit_number"])
+                if entity:
+                    stellan = {"name": player.get("name", "?"), "x": entity.get("x"), "y": entity.get("y")}
+        return {
+            "ok": True,
+            "mira": {"x": agent.get("x"), "y": agent.get("y")},
+            "stellan": stellan,
+            "speed": summary.get("speed"),
+            "run": json.loads(RUN_STATE.read_text(encoding="utf-8")) if RUN_STATE.exists() else None,
+        }
+    except Exception:
+        return {"ok": False}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -42,6 +67,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path == "/api/messages":
             self._send_json(read_messages())
+        elif path == "/api/state":
+            self._send_json(read_state())
         else:
             self.send_error(404)
 

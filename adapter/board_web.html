@@ -29,6 +29,12 @@ header h1 { font-size: 20px; margin: 0; font-weight: 600; }
 header .sub { color: var(--muted); font-size: 13px; }
 header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--primary); display: inline-block; margin-left: auto; }
 header .dot.err { background: var(--error); }
+.coords { font-size: 13px; color: var(--muted); display: flex; gap: 12px; flex-basis: 100%; align-items: center; }
+.coords .pair { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 2px 9px; cursor: pointer; user-select: none; }
+.coords .pair:hover { background: var(--primary-soft); }
+.coords .pair.mira:hover { background: #E7EEE4; }
+.coords .who-name { font-weight: 600; color: var(--primary-hover); }
+.coords .mira .who-name { color: #5F7F54; }
 
 /* cork board */
 .board {
@@ -125,6 +131,12 @@ button:disabled { opacity: .45; cursor: default; }
     <h1>Mira 留言板</h1>
     <span class="sub">共同工厂的公共留言层 · 每 3 秒自动刷新</span>
     <span class="dot" id="live" title="连接状态"></span>
+    <span class="coords">
+      <span class="pair" id="miraPos" title="点击复制 Mira 的坐标"><span class="who-name">Mira</span> <span class="pos">(--, --)</span></span>
+      <span class="pair mira" id="humanPos" title="点击复制 Stellan 的坐标"><span class="who-name">Stellan</span> <span class="pos">(不在线)</span></span>
+      <span id="serverState" class="hint" style="font-size:12px;color:var(--muted)"></span>
+      <span id="runState" class="hint" style="font-size:12px;color:var(--muted)"></span>
+    </span>
   </header>
 
   <div class="board" id="board">
@@ -204,7 +216,46 @@ async function refresh() {
   } catch (e) {
     liveEl.classList.add("err");
   }
+  try {
+    const res = await fetch("/api/state", {cache: "no-store"});
+    const state = await res.json();
+    const miraEl = document.querySelector("#miraPos .pos");
+    const humanEl = document.querySelector("#humanPos .pos");
+      const serverEl = document.getElementById("serverState");
+      const runEl = document.getElementById("runState");
+    if (state.ok) {
+      miraEl.textContent = "(" + Math.round(state.mira.x) + ", " + Math.round(state.mira.y) + ")";
+      humanEl.textContent = state.stellan
+        ? "(" + Math.round(state.stellan.x) + ", " + Math.round(state.stellan.y) + ")"
+        : "(不在线)";
+      serverEl.textContent = (state.stellan ? "你在线" : "你不在线") + " · " + state.speed + "x";
+      if (state.run) {
+        const elapsed = Math.floor((state.run.elapsed_seconds || 0) / 60);
+        runEl.textContent = "4C " + state.run.status + " · " + elapsed + " 分钟 · episode " + state.run.episode + " · " + state.run.provider_model;
+      } else {
+        runEl.textContent = "Mira 未运行";
+      }
+    } else {
+      miraEl.textContent = "(离线)";
+      humanEl.textContent = "(离线)";
+      serverEl.textContent = "游戏服务器未连接";
+      runEl.textContent = "";
+    }
+  } catch (e) { /* keep last known */ }
 }
+
+document.getElementById("miraPos").addEventListener("click", function () {
+  const text = this.querySelector(".pos").textContent;
+  if (text.startsWith("(")) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+});
+document.getElementById("humanPos").addEventListener("click", function () {
+  const text = this.querySelector(".pos").textContent;
+  if (text.startsWith("(")) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+});
 
 function updateCount() {
   const len = new TextEncoder().encode(textEl.value).length;

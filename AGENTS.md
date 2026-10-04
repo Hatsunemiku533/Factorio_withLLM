@@ -2,7 +2,7 @@
 
 这是「保留存档的小工厂 + 人机同世界」项目，不是 FLE 官方评测任务。全局交流与批准规则仍以 `C:\Users\ATRI\.config\opencode\AGENTS.md` 为准。
 
-当前路线是自建 `save-safe-bridge` mod + 受限 MCP，不接入 FLE 运行时。阶段 3C 与 4AB-R 均已完成；4AB-R 在约 22 分钟、5 个 episode 的重跑中通过验收。不要自行开始更长时自主运行或下一阶段。当前入口与目录说明以 `README.md` 为准；`实现调查.md` 的旧阶段是历史证据，不是可直接重跑的操作手册。
+当前路线是自建 `save-safe-bridge` mod + 受限 MCP，不接入 FLE 运行时。阶段 3C 与 4AB-R 均已完成；阶段 4C 尚未通过，最新 DeepSeek 运行 26 分 7 秒后因连续三轮未收尾超时安全停止。bridge 0.9.2 的核心工厂权限已实现。单 episode 上限现为 600 秒（尚未实跑），模型为 `deepseek/deepseek-flash`，40 个模型步骤和连续三轮未收尾熔断不变。下次正式耐久运行必须重新备份并取得 Stellan 确认后从计时 0 开始。4C 完成后停止，不自动进入 overnight。当前入口与目录说明以 `README.md` 为准；`docs/prompts/实现调查.md` 的旧阶段是历史证据，不是可直接重跑的操作手册。
 
 ## 硬约束
 
@@ -11,7 +11,7 @@
 - **客户端、服务器、mods 必须同版本且 mod 内容一致。** 本项目镜像是 `factoriotools/factorio:2.0.73`，不能想当然拿当前 Steam 版去连。
 - **不要把仓库或聊天里的 Factorio.com token 复制进本项目配置。** FLE 自带的 `server-settings.json` 含 token 字段；本地副本留空，或只用你自己的账号。
 - **RCON 与游戏端口只绑本机。** 正式服使用 `34197/udp`、`27015/tcp`，测试服使用 `34297/udp`、`27115/tcp`。密码分别由 `server/config/rconpw` 与 `server-test/config/rconpw` 管理，禁止读取后输出或提交。
-- **当前 AI 实验只在测试世界。** 不修改、覆盖或删除 `world/shared-world.zip`，不操作人类角色、库存或建筑。Mira 完成指定任务后停止，不自行进入下一阶段。
+- **当前 AI 实验只在测试世界。** 不修改、覆盖或删除 `world/shared-world.zip`，不操作人类角色或玩家 inventory。Stellan 已授权 Mira 在测试世界管理、取放、旋转和拆除双方工厂建筑；ownership 继续记录来源，但不再作为操作权限。Mira 完成指定任务后停止，不自行进入下一阶段。
 - **源码与部署副本分开。** mod 只在 `mods/save-safe-bridge/` 修改；测试服与客户端的副本必须同步。部署前先通知用户会不会踢人；不要在客户端运行时重写它的 zip。
 - **观察不是零副作用。** 查询会更新诊断计数；角色状态查询还可能确保头顶字、揭示定位区域并维护地图标记，不把它们说成完全无写入。
 
@@ -20,7 +20,7 @@
 | 路径 | 用途 |
 |---|---|
 | `README.md` | 项目入口与当前状态 |
-| `实现调查.md` | 已核实的实现方式、阶段、探针 |
+| `docs/prompts/实现调查.md` | 已核实的实现方式、阶段、探针 |
 | `.opencode/agent/mira.md` | Mira 的模型、权限和任务停止规则 |
 | `opencode.json` | 本项目受限 MCP 的启动配置 |
 | `world/` | 正式原生存档与正式服自动保存，禁止在 AI 测试中改动 |

@@ -38,6 +38,8 @@ for _, entity in pairs(game.surfaces[1].find_entities_filtered({type = "characte
     characters[#characters + 1] = {
     unit_number = entity.unit_number,
     player = entity.player and entity.player.name or "",
+    x = entity.position.x,
+    y = entity.position.y,
   }
 end
 summary.players = players

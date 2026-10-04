@@ -1,6 +1,6 @@
 """Restricted local MCP bridge for the Mira agent.
 
-The model can observe, walk, mine, craft, place and rotate allowed machines,
+The model can observe, walk, mine, craft, place, dismantle, rotate and use factory entities,
 inspect items and entities, close bounded episodes, and update bounded memory
 files. Raw RCON, free items, resets, and arbitrary file paths are not exposed.
 
@@ -26,8 +26,6 @@ LOG_DIR = MEMORY / "log"
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_VERSION = "0.2.0"
 
-PLACEABLE_ITEMS = ("stone-furnace", "burner-mining-drill")
-MACHINE_NAMES = ("stone-furnace", "burner-mining-drill")
 DIRECTIONS = ("north", "east", "south", "west")
 EPISODE_STATUSES = ("continue", "blocker")
 MUTATING_FUNCTIONS = {
@@ -38,9 +36,11 @@ MUTATING_FUNCTIONS = {
     "insert_into_entity",
     "take_from_entity",
     "rotate_entity",
+    "dismantle_entity",
 }
 OBSERVE_RADIUS = 32
 OBSERVE_INSPECT_BUDGET = 8
+OBSERVE_ENTITY_BUDGET = 80
 
 
 def text_result(payload, is_error=False):
@@ -111,12 +111,9 @@ def compact_machine(detail):
         "direction": detail.get("direction"),
         "is_crafting": detail.get("is_crafting"),
     }
-    if detail.get("name") == "stone-furnace":
-        compact["products_finished"] = detail.get("products_finished")
-    else:
-        compact["mining_target"] = detail.get("mining_target")
-        compact["drop_position"] = detail.get("drop_position")
-        compact["drop_target"] = detail.get("drop_target")
+    for key in ("products_finished", "mining_target", "drop_position", "drop_target", "fuel", "input", "output", "main"):
+        if detail.get(key) is not None:
+            compact[key] = detail[key]
     return compact
 
 
@@ -138,11 +135,13 @@ def observe():
         nearby = {"entities": []}
     for entity in nearby.get("entities", []):
         name = entity.get("name")
-        if name not in MACHINE_NAMES and name != "character":
+        if name == "character" or entity.get("unit_number") is None:
             continue
+        if len(entities) >= OBSERVE_ENTITY_BUDGET:
+            break
         entry = dict(entity)
         unit_number = entity.get("unit_number")
-        if name in MACHINE_NAMES and unit_number is not None and inspected < OBSERVE_INSPECT_BUDGET:
+        if inspected < OBSERVE_INSPECT_BUDGET:
             try:
                 detail = call_remote("inspect_entity", {"unit_number": unit_number})
             except Exception as exc:
@@ -286,8 +285,8 @@ def inspect_item(arguments):
 
 def place_item(arguments):
     item = str(arguments["item"])
-    if item not in PLACEABLE_ITEMS:
-        raise ValueError("only stone-furnace and burner-mining-drill placement is allowed")
+    if not item:
+        raise ValueError("item is required")
     x = finite_float(arguments["x"], "x")
     y = finite_float(arguments["y"], "y")
     direction = str(arguments.get("direction", "north"))
@@ -312,6 +311,10 @@ def rotate_entity(arguments):
     })
 
 
+def dismantle_entity(arguments):
+    return call_remote("dismantle_entity", {"unit_number": int(arguments["unit_number"])})
+
+
 def inspect_entity(arguments):
     request = {}
     if "unit_number" in arguments:
@@ -327,8 +330,8 @@ def insert_into_entity(arguments):
     if count < 1 or count > 20:
         raise ValueError("count must be between 1 and 20")
     kind = str(arguments["inventory_kind"])
-    if kind not in ("fuel", "input"):
-        raise ValueError("inventory_kind must be fuel or input")
+    if kind not in ("main", "fuel", "input", "output"):
+        raise ValueError("inventory_kind must be main, fuel, input, or output")
     return call_remote("insert_into_entity", {
         "unit_number": int(arguments["unit_number"]),
         "item": str(arguments["item"]),
@@ -342,8 +345,8 @@ def take_from_entity(arguments):
     if count < 1 or count > 20:
         raise ValueError("count must be between 1 and 20")
     kind = str(arguments.get("inventory_kind", "output"))
-    if kind not in ("fuel", "input", "output"):
-        raise ValueError("inventory_kind must be fuel, input, or output")
+    if kind not in ("main", "fuel", "input", "output"):
+        raise ValueError("inventory_kind must be main, fuel, input, or output")
     return call_remote("take_from_entity", {
         "unit_number": int(arguments["unit_number"]),
         "item": str(arguments["item"]),
@@ -496,7 +499,7 @@ TOOLS = {
         "handler": inspect_item,
     },
     "place_item": {
-        "description": "Place one allowed item from Mira's inventory at nearby coordinates, optionally facing one cardinal direction.",
+        "description": "Place one factory entity item from Mira's inventory at reachable coordinates, optionally facing one cardinal direction.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -511,7 +514,7 @@ TOOLS = {
         "handler": place_item,
     },
     "rotate_entity": {
-        "description": "Rotate a reachable machine to one of the four cardinal directions.",
+        "description": "Rotate a reachable player-force factory entity to one of the four cardinal directions.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -523,8 +526,18 @@ TOOLS = {
         },
         "handler": rotate_entity,
     },
+    "dismantle_entity": {
+        "description": "Mine one reachable player-force factory entity into Mira's inventory. Characters and non-player entities are always rejected.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"unit_number": {"type": "integer"}},
+            "required": ["unit_number"],
+            "additionalProperties": False,
+        },
+        "handler": dismantle_entity,
+    },
     "inspect_entity": {
-        "description": "Inspect a nearby machine (stone furnace or burner mining drill): status, ownership, direction, inventories, and machine-specific fields.",
+        "description": "Inspect a nearby player-force factory entity: status, provenance ownership, direction, inventories, and type-specific fields.",
         "inputSchema": {
             "type": "object",
             "properties": {"unit_number": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}},
@@ -533,7 +546,7 @@ TOOLS = {
         "handler": inspect_entity,
     },
     "insert_into_entity": {
-        "description": "Insert 1 to 20 of Mira's own items into a reachable stone furnace fuel or input inventory.",
+        "description": "Insert 1 to 20 of Mira's own items into a reachable entity main, fuel, input, or output inventory.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -548,7 +561,7 @@ TOOLS = {
         "handler": insert_into_entity,
     },
     "take_from_entity": {
-        "description": "Take 1 to 20 real items from a reachable stone furnace, usually from output.",
+        "description": "Take 1 to 20 real items from a reachable entity main, fuel, input, or output inventory.",
         "inputSchema": {
             "type": "object",
             "properties": {
